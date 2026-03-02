@@ -5,7 +5,9 @@
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
-#include <hyprland/src/managers/LayoutManager.hpp>
+#include <hyprland/src/layout/LayoutManager.hpp>
+#include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/managers/animation/AnimationManager.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 
@@ -14,9 +16,9 @@ inline HANDLE pHandle = NULL;
 typedef SDispatchResult (*tMouseKeybind)(std::string);
 extern void* pMouseKeybind;
 
-typedef void (*tRenderWindow)(void*, PHLWINDOW, PHLMONITOR, timespec*, bool, eRenderPassMode, bool, bool);
+typedef void (*tRenderWindow)(void*, PHLWINDOW, PHLMONITOR, const Time::steady_tp&, bool, eRenderPassMode, bool, bool);
 extern void* pRenderWindow;
-typedef void (*tRenderLayer)(void*, PHLLSREF, PHLMONITOR, timespec*, bool);
+typedef void (*tRenderLayer)(void*, PHLLS, PHLMONITOR, const Time::steady_tp&, bool, bool);
 extern void* pRenderLayer;
 namespace Config {
     extern CHyprColor panelBaseColor;
