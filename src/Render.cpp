@@ -64,8 +64,8 @@ void renderBorder(CBox box, CGradientValueData gradient, int size) {
     g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(data));
 }
 
-void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWorkspaceOverride, CBox rectOverride, timespec* time) {
-    if (!pWindow || !pMonitor || !pWorkspaceOverride || !time) return;
+void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWorkspaceOverride, CBox rectOverride, const Time::steady_tp& time) {
+    if (!pWindow || !pMonitor || !pWorkspaceOverride) return;
 
     SRenderModifData renderModif;
 
@@ -75,8 +75,6 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
     const auto oSize = pWindow->m_realSize->value();
     const auto oUseNearestNeighbor = pWindow->m_ruleApplicator->nearestNeighbor();
     const auto oPinned = pWindow->m_pinned;
-    const auto oDraggedWindow = g_pInputManager->m_currentlyDraggedWindow;
-    const auto oDragMode = g_pInputManager->m_dragMode;
     const auto oFloating = pWindow->m_isFloating;
 
     const float curScaling = rectOverride.w / (oSize.x * pMonitor->m_scale);
@@ -92,8 +90,6 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
     pWindow->m_isFloating = false;
     pWindow->m_pinned = true;
     pWindow->m_ruleApplicator->rounding().set(pWindow->rounding() * curScaling * pMonitor->m_scale, Desktop::Types::PRIORITY_SET_PROP);
-    g_pInputManager->m_currentlyDraggedWindow = pWindow; // override these and force INTERACTIVERESIZEINPROGRESS = true to trick the renderer
-    g_pInputManager->m_dragMode = MBIND_RESIZE;
 
     g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{renderModif}));
     // remove modif as it goes out of scope (wtf is this blackmagic i need to relearn c++)
@@ -112,12 +108,10 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
     pWindow->m_isFloating = oFloating;
     pWindow->m_pinned = oPinned;
     pWindow->m_ruleApplicator->rounding().unset(Desktop::Types::PRIORITY_SET_PROP);
-    g_pInputManager->m_currentlyDraggedWindow = oDraggedWindow;
-    g_pInputManager->m_dragMode = oDragMode;
 }
 
-void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, timespec* time) {
-    if (!pLayer || !pMonitor || !time) return;
+void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, const Time::steady_tp& time) {
+    if (!pLayer || !pMonitor) return;
 
     if (!pLayer->m_mapped || pLayer->m_readyToDelete || !pLayer->m_layerSurface) return;
 
@@ -142,7 +136,7 @@ void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, times
         g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{SRenderModifData{}}));
         });
 
-    (*(tRenderLayer)pRenderLayer)(g_pHyprRenderer.get(), pLayer, pMonitor, time, false);
+    (*(tRenderLayer)pRenderLayer)(g_pHyprRenderer.get(), pLayer, pMonitor, time, false, false);
 
     pLayer->m_fadingOut = oFadingOut;
     pLayer->m_alpha->setValue(oAlpha);
@@ -159,8 +153,7 @@ void CHyprspaceWidget::draw() {
 
     if (!owner) return;
 
-    timespec time;
-    clock_gettime(CLOCK_MONOTONIC, &time);
+    const auto time = Time::steadyNow();
 
     g_pHyprOpenGL->m_renderData.pCurrentMonData->blurFBShouldRender = true;
 
@@ -303,13 +296,13 @@ void CHyprspaceWidget::draw() {
             for (auto& ls : owner->m_layerSurfaceLayers[0]) {
                 CBox layerBox = {curWorkspaceBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor};
                 g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
-                renderLayerStub(ls.lock(), owner, layerBox, &time);
+                renderLayerStub(ls.lock(), owner, layerBox, time);
                 g_pHyprOpenGL->m_renderData.clipBox = CBox();
             }
             for (auto& ls : owner->m_layerSurfaceLayers[1]) {
                 CBox layerBox = {curWorkspaceBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor};
                 g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
-                renderLayerStub(ls.lock(), owner, layerBox, &time);
+                renderLayerStub(ls.lock(), owner, layerBox, time);
                 g_pHyprOpenGL->m_renderData.clipBox = CBox();
             }
         }
@@ -342,7 +335,7 @@ void CHyprspaceWidget::draw() {
                     CBox curWindowBox = {wX, wY, wW, wH};
                     g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
                     //g_pHyprOpenGL->renderRectWithBlur(&curWindowBox, CHyprColor(0, 0, 0, 0));
-                    renderWindowStub(w, owner, owner->m_activeWorkspace, curWindowBox, &time);
+                    renderWindowStub(w, owner, owner->m_activeWorkspace, curWindowBox, time);
                     g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 }
             }
@@ -358,7 +351,7 @@ void CHyprspaceWidget::draw() {
                     CBox curWindowBox = {wX, wY, wW, wH};
                     g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
                     //g_pHyprOpenGL->renderRectWithBlur(&curWindowBox, CHyprColor(0, 0, 0, 0));
-                    renderWindowStub(w, owner, owner->m_activeWorkspace, curWindowBox, &time);
+                    renderWindowStub(w, owner, owner->m_activeWorkspace, curWindowBox, time);
                     g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 }
             }
@@ -374,7 +367,7 @@ void CHyprspaceWidget::draw() {
                     CBox curWindowBox = {wX, wY, wW, wH};
                     g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
                     //g_pHyprOpenGL->renderRectWithBlur(&curWindowBox, CHyprColor(0, 0, 0, 0));
-                    renderWindowStub(w, owner, owner->m_activeWorkspace, curWindowBox, &time);
+                    renderWindowStub(w, owner, owner->m_activeWorkspace, curWindowBox, time);
                     g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 }
         }
@@ -385,7 +378,7 @@ void CHyprspaceWidget::draw() {
                 for (auto& ls : owner->m_layerSurfaceLayers[2]) {
                     CBox layerBox = {curWorkspaceBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor};
                     g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
-                    renderLayerStub(ls.lock(), owner, layerBox, &time);
+                    renderLayerStub(ls.lock(), owner, layerBox, time);
                     g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 }
 
@@ -393,7 +386,7 @@ void CHyprspaceWidget::draw() {
                 for (auto& ls : owner->m_layerSurfaceLayers[3]) {
                     CBox layerBox = {curWorkspaceBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor};
                     g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
-                    renderLayerStub(ls.lock(), owner, layerBox, &time);
+                    renderLayerStub(ls.lock(), owner, layerBox, time);
                     g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 }
         }
