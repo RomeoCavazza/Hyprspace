@@ -4,7 +4,9 @@
 bool CHyprspaceWidget::buttonEvent(bool pressed, Vector2D coords) {
     bool Return;
 
-    const auto targetWindow = g_pInputManager->m_currentlyDraggedWindow.lock();
+    PHLWINDOW targetWindow;
+    if (const auto dragTarget = g_layoutManager->dragController()->target())
+        targetWindow = dragTarget->window();
 
     // this is for click to exit, we set a timeout for button release
     bool couldExit = false;
@@ -36,10 +38,8 @@ bool CHyprspaceWidget::buttonEvent(bool pressed, Vector2D coords) {
     // if the cursor is hovering over workspace, clicking should switch workspace instead of starting window drag
     if (Config::autoDrag && (targetWorkspace == nullptr || !pressed)) {
         // when overview is active, always drag windows on mouse click
-        if (const auto curWindow = g_pInputManager->m_currentlyDraggedWindow.lock()) {
-            g_pLayoutManager->getCurrentLayout()->onEndDragWindow();
-            g_pInputManager->m_currentlyDraggedWindow.reset();
-            g_pInputManager->m_dragMode = MBIND_INVALID;
+        if (g_layoutManager->dragController()->target()) {
+            g_layoutManager->endDragTarget();
         }
         std::string keybind = (pressed ? "1" : "0") + std::string("movewindow");
         (*(tMouseKeybind)pMouseKeybind)(keybind);
