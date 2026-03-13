@@ -75,17 +75,23 @@ bool CHyprspaceWidget::buttonEvent(bool pressed, Vector2D coords) {
     return Return;
 }
 
-bool CHyprspaceWidget::axisEvent(double delta, Vector2D coords) {
+bool CHyprspaceWidget::axisEvent(double delta, wl_pointer_axis axis, Vector2D coords) {
 
     const auto owner = getOwner();
     CBox widgetBox = {owner->m_position.x, owner->m_position.y - curYOffset->value(), owner->m_transformedSize.x, (Config::panelHeight + Config::reservedArea) * owner->m_scale};
     if (Config::onBottom) widgetBox = {owner->m_position.x, owner->m_position.y + owner->m_transformedSize.y - ((Config::panelHeight + Config::reservedArea) * owner->m_scale) + curYOffset->value(), owner->m_transformedSize.x, (Config::panelHeight + Config::reservedArea) * owner->m_scale};
 
-    // scroll through panel if cursor is on it
+    // horizontal scroll pans the panel
+    if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+        *workspaceScrollOffset = workspaceScrollOffset->goal() - delta * 2;
+        return false;
+    }
+
+    // scroll through panel if cursor is on it (vertical scroll)
     if (widgetBox.containsPoint(coords * getOwner()->m_scale)) {
         *workspaceScrollOffset = workspaceScrollOffset->goal() - delta * 2;
     }
-    // otherwise, scroll to switch active workspace
+    // otherwise, vertical scroll switches active workspace
     else {
         if (delta < 0) {
             SWorkspaceIDName wsIDName = getWorkspaceIDNameFromString("r-1");
@@ -105,7 +111,6 @@ bool CHyprspaceWidget::axisEvent(double delta, Vector2D coords) {
         }
     }
 
-
     return false;
 }
 
@@ -122,7 +127,7 @@ bool CHyprspaceWidget::beginSwipe(IPointer::SSwipeBeginEvent e) {
 }
 
 bool CHyprspaceWidget::updateSwipe(IPointer::SSwipeUpdateEvent e) {
-    int fingers = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "gestures:workspace_swipe_fingers")->getValue());
+    constexpr int fingers = 3;
     int distance = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "gestures:workspace_swipe_distance")->getValue());
 
     // restrict swipe to a axis with the most significant movement to prevent misinput
