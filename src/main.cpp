@@ -534,13 +534,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE inHandle) {
 
     g_pSwitchWorkspaceHook = Event::bus()->m_events.workspace.active.listen(onWorkspaceChange);
 
-    // CHyprRenderer::renderWindow
-    auto funcSearch = HyprlandAPI::findFunctionsByName(pHandle, "renderWindow");
-    pRenderWindow = funcSearch[0].address;
-
-    // CHyprRenderer::renderLayer
-    funcSearch = HyprlandAPI::findFunctionsByName(pHandle, "renderLayer");
-    pRenderLayer = funcSearch[0].address;
+    pRenderWindow = findFunctionBySymbol(pHandle, "renderWindow", "CHyprRenderer::renderWindow");
+    pRenderLayer = findFunctionBySymbol(pHandle, "renderLayer", "CHyprRenderer::renderLayer");
 
     registerMonitors();
     g_pAddMonitorHook = Event::bus()->m_events.monitor.added.listen([](const PHLMONITOR&) { registerMonitors(); });
