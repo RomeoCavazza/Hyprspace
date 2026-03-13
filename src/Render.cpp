@@ -1,42 +1,10 @@
 #include "Overview.hpp"
 #include "Globals.hpp"
-#include "src/helpers/memory/Memory.hpp"
 #include <hyprland/src/render/pass/RectPassElement.hpp>
 #include <hyprland/src/render/pass/BorderPassElement.hpp>
 #include <hyprland/src/render/pass/RendererHintsPassElement.hpp>
 #include <hyprlang.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
-
-// What are we even doing...
-class CFakeDamageElement : public IPassElement {
-public:
-    CBox       box;
-
-    CFakeDamageElement(const CBox& box) {
-        this->box = box;
-    }
-    virtual ~CFakeDamageElement() = default;
-
-    virtual void                draw(const CRegion& damage) {
-        return;
-    }
-    virtual bool                needsLiveBlur() {
-        return true; // hack
-    }
-    virtual bool                needsPrecomputeBlur() {
-        return false;
-    }
-    virtual std::optional<CBox> boundingBox() {
-        return box.copy().scale(1.f / g_pHyprOpenGL->m_renderData.pMonitor->m_scale).round();
-    }
-    virtual CRegion             opaqueRegion() {
-        return CRegion{};
-    }
-    virtual const char* passName() {
-        return "CFakeDamageElement";
-    }
-
-};
 
 
 void renderRect(CBox box, CHyprColor color) {
@@ -81,8 +49,8 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
 
     // using renderModif struct to override the position and scale of windows
     // this will be replaced by matrix transformations in hyprland
-    renderModif.modifs.push_back({SRenderModifData::eRenderModifType::RMOD_TYPE_TRANSLATE, (pMonitor->m_position * pMonitor->m_scale) + (rectOverride.pos() / curScaling) - (oRealPosition * pMonitor->m_scale)});
-    renderModif.modifs.push_back({SRenderModifData::eRenderModifType::RMOD_TYPE_SCALE, curScaling});
+    renderModif.modifs.push_back(std::make_pair(SRenderModifData::eRenderModifType::RMOD_TYPE_TRANSLATE, std::any((pMonitor->m_position * pMonitor->m_scale) + (rectOverride.pos() / curScaling) - (oRealPosition * pMonitor->m_scale))));
+    renderModif.modifs.push_back(std::make_pair(SRenderModifData::eRenderModifType::RMOD_TYPE_SCALE, std::any(curScaling)));
     renderModif.enabled = true;
     pWindow->m_workspace = pWorkspaceOverride;
     pWindow->m_fullscreenState = Desktop::View::SFullscreenState{FSMODE_NONE};
@@ -124,8 +92,8 @@ void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, const
 
     SRenderModifData renderModif;
 
-    renderModif.modifs.push_back({SRenderModifData::eRenderModifType::RMOD_TYPE_TRANSLATE, pMonitor->m_position + (rectOverride.pos() / curScaling) - oRealPosition});
-    renderModif.modifs.push_back({SRenderModifData::eRenderModifType::RMOD_TYPE_SCALE, curScaling});
+    renderModif.modifs.push_back(std::make_pair(SRenderModifData::eRenderModifType::RMOD_TYPE_TRANSLATE, std::any(pMonitor->m_position + (rectOverride.pos() / curScaling) - oRealPosition)));
+    renderModif.modifs.push_back(std::make_pair(SRenderModifData::eRenderModifType::RMOD_TYPE_SCALE, std::any(curScaling)));
     renderModif.enabled = true;
     pLayer->m_alpha->setValue(1);
     pLayer->m_fadingOut = false;
@@ -191,11 +159,7 @@ void CHyprspaceWidget::draw() {
 
     //owner->addDamage(damageBox);
     g_pHyprRenderer->damageMonitor(owner);
-
-    // add a fake element with needsliveblur = true and covers the entire monitor to ensure damage applies to the entire monitor
-    // unoptimized atm but hey its working
-    CFakeDamageElement fakeDamage = CFakeDamageElement(CBox({0, 0}, owner->m_transformedSize));
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CFakeDamageElement>(fakeDamage));
+    g_pHyprRenderer->damageMonitor(owner);
 
     // the list of workspaces to show
     std::vector<int> workspaces;
