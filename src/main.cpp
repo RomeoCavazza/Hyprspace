@@ -201,8 +201,7 @@ void onMouseAxis(const IPointer::SAxisEvent& e, Event::SCallbackInfo& info) {
         const auto widget = getWidgetForMonitor(pMonitor);
         if (widget) {
             if (widget->isActive()) {
-                if (e.source == WL_POINTER_AXIS_SOURCE_WHEEL)
-                    info.cancelled = !widget->axisEvent(e.delta, g_pInputManager->getMouseCoordsInternal());
+                info.cancelled = !widget->axisEvent(e.delta, e.axis, g_pInputManager->getMouseCoordsInternal());
             }
         }
     }
@@ -495,7 +494,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE inHandle) {
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:showEmptyWorkspace", Hyprlang::INT{1});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:showSpecialWorkspace", Hyprlang::INT{0});
 
-    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:disableGestures", Hyprlang::INT{0});
+    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:disableGestures", Hyprlang::INT{1});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:reverseSwipe", Hyprlang::INT{0});
 
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:disableBlur", Hyprlang::INT{0});
@@ -520,18 +519,18 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE inHandle) {
     // CKeybindManager::mouse (names too generic bruh) (this is a private function btw)
     pMouseKeybind = findFunctionBySymbol(pHandle, "mouse", "CKeybindManager::mouse");
 
-    g_pMouseButtonHook = Event::bus()->m_events.input.mouse.button.listen(onMouseButton);
-    g_pMouseAxisHook = Event::bus()->m_events.input.mouse.axis.listen(onMouseAxis);
+    g_pMouseButtonHook = listenCancellable<IPointer::SButtonEvent>(Event::bus()->m_events.input.mouse.button, onMouseButton);
+    g_pMouseAxisHook = listenCancellable<IPointer::SAxisEvent>(Event::bus()->m_events.input.mouse.axis, onMouseAxis);
 
-    g_pTouchDownHook = Event::bus()->m_events.input.touch.down.listen(onTouchDown);
-    g_pTouchMoveHook = Event::bus()->m_events.input.touch.motion.listen(onTouchMove);
-    g_pTouchUpHook = Event::bus()->m_events.input.touch.up.listen(onTouchUp);
+    g_pTouchDownHook = listenCancellable<ITouch::SDownEvent>(Event::bus()->m_events.input.touch.down, onTouchDown);
+    g_pTouchMoveHook = listenCancellable<ITouch::SMotionEvent>(Event::bus()->m_events.input.touch.motion, onTouchMove);
+    g_pTouchUpHook = listenCancellable<ITouch::SUpEvent>(Event::bus()->m_events.input.touch.up, onTouchUp);
 
-    g_pSwipeBeginHook = Event::bus()->m_events.gesture.swipe.begin.listen(onSwipeBegin);
-    g_pSwipeUpdateHook = Event::bus()->m_events.gesture.swipe.update.listen(onSwipeUpdate);
-    g_pSwipeEndHook = Event::bus()->m_events.gesture.swipe.end.listen(onSwipeEnd);
+    g_pSwipeBeginHook = listenCancellable<IPointer::SSwipeBeginEvent>(Event::bus()->m_events.gesture.swipe.begin, onSwipeBegin);
+    g_pSwipeUpdateHook = listenCancellable<IPointer::SSwipeUpdateEvent>(Event::bus()->m_events.gesture.swipe.update, onSwipeUpdate);
+    g_pSwipeEndHook = listenCancellable<IPointer::SSwipeEndEvent>(Event::bus()->m_events.gesture.swipe.end, onSwipeEnd);
 
-    g_pKeyPressHook = Event::bus()->m_events.input.keyboard.key.listen(onKeyPress);
+    g_pKeyPressHook = listenCancellable<IKeyboard::SKeyEvent>(Event::bus()->m_events.input.keyboard.key, onKeyPress);
 
     g_pSwitchWorkspaceHook = Event::bus()->m_events.workspace.active.listen(onWorkspaceChange);
 
