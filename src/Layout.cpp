@@ -8,6 +8,7 @@ void CHyprspaceWidget::updateLayout() {
 
     const auto currentHeight = Config::panelHeight + Config::reservedArea;
     const auto pMonitor = getOwner();
+    if (!pMonitor) return;
 
     // reset reserved areas
     g_pHyprRenderer->arrangeLayersForMonitor(ownerID);
