@@ -10,13 +10,25 @@ void CHyprspaceWidget::updateLayout() {
     const auto pMonitor = getOwner();
     if (!pMonitor) return;
 
-    // reset reserved areas
-    g_pHyprRenderer->arrangeLayersForMonitor(ownerID);
-
     static auto PGAPSINDATA = CConfigValue<Hyprlang::CUSTOMTYPE>("general:gaps_in");
     static auto PGAPSOUTDATA = CConfigValue<Hyprlang::CUSTOMTYPE>("general:gaps_out");
     auto* const PGAPSIN = (CCssGapData*)(PGAPSINDATA.ptr())->getData();
     auto* const PGAPSOUT = (CCssGapData*)(PGAPSOUTDATA.ptr())->getData();
+
+    // Set panel reservation as initial values BEFORE arranging layers,
+    // so that arrangeLayersForMonitor adds LS reservations as dynamic data
+    // on top of our panel reservation without double-counting.
+    if (active) {
+        if (!Config::onBottom)
+            pMonitor->m_reservedArea = Desktop::CReservedArea(currentHeight, 0, 0, 0);
+        else
+            pMonitor->m_reservedArea = Desktop::CReservedArea(0, 0, currentHeight, 0);
+    } else {
+        pMonitor->m_reservedArea = Desktop::CReservedArea();
+    }
+
+    // arrange layers adds LS dynamic reservations on top of our initial values
+    g_pHyprRenderer->arrangeLayersForMonitor(ownerID);
 
     // gaps are created via workspace rules
     // there are no way to write to m_dWorkspaceRules directly
@@ -35,22 +47,6 @@ void CHyprspaceWidget::updateLayout() {
             }
         }
         pMonitor->m_activeWorkspace = oActiveWorkspace;
-
-        if (!Config::onBottom) {
-            pMonitor->m_reservedArea = Desktop::CReservedArea(
-                pMonitor->m_reservedArea.top() + currentHeight,
-                pMonitor->m_reservedArea.right(),
-                pMonitor->m_reservedArea.bottom(),
-                pMonitor->m_reservedArea.left()
-            );
-        } else {
-            pMonitor->m_reservedArea = Desktop::CReservedArea(
-                pMonitor->m_reservedArea.top(),
-                pMonitor->m_reservedArea.right(),
-                pMonitor->m_reservedArea.bottom() + currentHeight,
-                pMonitor->m_reservedArea.left()
-            );
-        }
 
         const auto curRules = std::to_string(pMonitor->activeWorkspaceID()) + ", gapsin:" + std::to_string(Config::gapsIn) + ", gapsout:" + std::to_string(Config::gapsOut);
         if (Config::overrideGaps) g_pConfigManager->handleWorkspaceRules("", curRules);
