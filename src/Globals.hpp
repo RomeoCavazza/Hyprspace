@@ -10,6 +10,22 @@
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/managers/animation/AnimationManager.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
+#include <hyprutils/signal/Signal.hpp>
+#include <functional>
+#include <tuple>
+
+// Helper to register a cancellable event listener that properly unpacks
+// std::tuple<const EventType&, SCallbackInfo&> from the signal's void* args.
+template <typename EventType, typename Signal>
+CHyprSignalListener listenCancellable(Signal& signal, std::function<void(const EventType&, Event::SCallbackInfo&)> handler) {
+    struct Hack : Hyprutils::Signal::CSignalBase {
+        using CSignalBase::registerListenerInternal;
+    };
+    return reinterpret_cast<Hack&>(signal).registerListenerInternal([handler](void* args) {
+        auto* tup = static_cast<std::tuple<const EventType&, Event::SCallbackInfo&>*>(args);
+        handler(std::get<0>(*tup), std::get<1>(*tup));
+    });
+}
 
 inline HANDLE pHandle = NULL;
 
