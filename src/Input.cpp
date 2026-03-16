@@ -2,11 +2,6 @@
 #include "Globals.hpp"
 
 bool CHyprspaceWidget::buttonEvent(bool pressed, Vector2D coords) {
-    bool Return;
-
-    PHLWINDOW targetWindow;
-    if (const auto dragTarget = g_layoutManager->dragController()->target())
-        targetWindow = dragTarget->window();
 
     // this is for click to exit, we set a timeout for button release
     bool couldExit = false;
@@ -39,34 +34,31 @@ bool CHyprspaceWidget::buttonEvent(bool pressed, Vector2D coords) {
         // on press: check if cursor is over a window thumbnail and begin drag
         for (auto& [wref, wbox] : windowBoxes) {
             if (wbox.containsPoint(coords)) {
-                if (auto w = wref.lock())
-                    g_layoutManager->beginDragTarget(Layout::CWindowTarget::create(w), MBIND_MOVE);
+                draggedWindowRef = wref;
                 return false;
             }
         }
-    } else {
-        // on release: end any active drag
-        if (g_layoutManager->dragController()->target())
-            g_layoutManager->endDragTarget();
+    } else if (auto dw = draggedWindowRef.lock()) {
+        // on release: drop dragged window into target workspace
+        draggedWindowRef.reset();
+        if (targetWorkspace != nullptr) {
+            g_pCompositor->moveWindowToWorkspaceSafe(dw, targetWorkspace);
+            if (dw->m_isFloating) {
+                auto targetPos = getOwner()->m_position + (getOwner()->m_size / 2.) - (dw->m_reportedSize / 2.);
+                dw->m_position = targetPos;
+                *dw->m_realPosition = targetPos;
+            }
+            if (Config::switchOnDrop) {
+                g_pCompositor->getMonitorFromID(targetWorkspace->m_monitor->m_id)->changeWorkspace(targetWorkspace->m_id);
+                if (Config::exitOnSwitch && active) hide();
+            }
+            updateLayout();
+        }
+        return false;
     }
-    Return = false;
 
-    // release window on workspace to drop it in
-    if (targetWindow && targetWorkspace != nullptr && !pressed) {
-        g_pCompositor->moveWindowToWorkspaceSafe(targetWindow, targetWorkspace);
-        if (targetWindow->m_isFloating) {
-            auto targetPos = getOwner()->m_position + (getOwner()->m_size / 2.) - (targetWindow->m_reportedSize / 2.);
-            targetWindow->m_position = targetPos;
-            *targetWindow->m_realPosition = targetPos;
-        }
-        if (Config::switchOnDrop) {
-            g_pCompositor->getMonitorFromID(targetWorkspace->m_monitor->m_id)->changeWorkspace(targetWorkspace->m_id);
-            if (Config::exitOnSwitch && active) hide();
-        }
-        updateLayout();
-    }
     // click workspace to change to workspace and exit overview
-    else if (targetWorkspace && !pressed) {
+    if (targetWorkspace && !pressed) {
         if (targetWorkspace->m_isSpecialWorkspace)
             getOwner()->activeSpecialWorkspaceID() == targetWorkspaceID ? getOwner()->setSpecialWorkspace(nullptr) : getOwner()->setSpecialWorkspace(targetWorkspaceID);
         else {
@@ -77,7 +69,7 @@ bool CHyprspaceWidget::buttonEvent(bool pressed, Vector2D coords) {
     // click elsewhere to exit overview
     else if (Config::exitOnClick && targetWorkspace == nullptr && active && couldExit && !pressed) hide();
 
-    return Return;
+    return false;
 }
 
 bool CHyprspaceWidget::axisEvent(double delta, wl_pointer_axis axis, Vector2D coords) {
