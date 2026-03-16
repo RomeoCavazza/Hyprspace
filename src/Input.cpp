@@ -35,14 +35,19 @@ bool CHyprspaceWidget::buttonEvent(bool pressed, Vector2D coords) {
         targetWorkspace = g_pCompositor->createNewWorkspace(targetWorkspaceID, getOwner()->m_id);
     }
 
-    // if the cursor is hovering over workspace, clicking should switch workspace instead of starting window drag
-    if (Config::autoDrag && (targetWorkspace == nullptr || !pressed)) {
-        // when overview is active, always drag windows on mouse click
-        if (g_layoutManager->dragController()->target()) {
-            g_layoutManager->endDragTarget();
+    if (pressed) {
+        // on press: check if cursor is over a window thumbnail and begin drag
+        for (auto& [wref, wbox] : windowBoxes) {
+            if (wbox.containsPoint(coords)) {
+                if (auto w = wref.lock())
+                    g_layoutManager->beginDragTarget(Layout::CWindowTarget::create(w), MBIND_MOVE);
+                return false;
+            }
         }
-        std::string keybind = (pressed ? "1" : "0") + std::string("movewindow");
-        (*(tMouseKeybind)pMouseKeybind)(keybind);
+    } else {
+        // on release: end any active drag
+        if (g_layoutManager->dragController()->target())
+            g_layoutManager->endDragTarget();
     }
     Return = false;
 
