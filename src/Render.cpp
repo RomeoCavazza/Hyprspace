@@ -73,6 +73,7 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
     pWindow->m_workspace = oWorkspace;
     pWindow->m_fullscreenState = oFullscreen;
     pWindow->m_ruleApplicator->rounding().unset(Desktop::Types::PRIORITY_SET_PROP);
+    pWindow->m_ruleApplicator->nearestNeighbor().unset(Desktop::Types::PRIORITY_SET_PROP);
     pWindow->m_isFloating = oFloating;
     pWindow->m_pinned = oPinned;
 }
