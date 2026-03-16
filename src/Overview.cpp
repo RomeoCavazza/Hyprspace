@@ -19,6 +19,13 @@ CHyprspaceWidget::CHyprspaceWidget(uint64_t inOwnerID) {
             auto owner = getOwner();
             if (owner) {
                 g_pHyprRenderer->damageMonitor(owner);
+                for (auto& ws : g_pCompositor->getWorkspaces()) {
+                    if (!ws || ws->m_monitor->m_id != ownerID) continue;
+                    for (auto& w : g_pCompositor->m_windows) {
+                        if (!w || w->m_workspace != ws || !w->m_isMapped) continue;
+                        g_pHyprRenderer->damageWindow(w);
+                    }
+                }
                 g_pCompositor->scheduleFrameForMonitor(owner);
             }
         }
@@ -133,6 +140,13 @@ void CHyprspaceWidget::hide() {
 
     updateLayout();
     g_pHyprRenderer->damageMonitor(owner);
+    for (auto& ws : g_pCompositor->getWorkspaces()) {
+        if (!ws || ws->m_monitor->m_id != ownerID) continue;
+        for (auto& w : g_pCompositor->m_windows) {
+            if (!w || w->m_workspace != ws || !w->m_isMapped) continue;
+            g_pHyprRenderer->damageWindow(w);
+        }
+    }
     g_pCompositor->scheduleFrameForMonitor(owner);
 }
 
@@ -152,6 +166,13 @@ void CHyprspaceWidget::updateConfig() {
             auto owner = getOwner();
             if (owner) {
                 g_pHyprRenderer->damageMonitor(owner);
+                for (auto& ws : g_pCompositor->getWorkspaces()) {
+                    if (!ws || ws->m_monitor->m_id != ownerID) continue;
+                    for (auto& w : g_pCompositor->m_windows) {
+                        if (!w || w->m_workspace != ws || !w->m_isMapped) continue;
+                        g_pHyprRenderer->damageWindow(w);
+                    }
+                }
                 g_pCompositor->scheduleFrameForMonitor(owner);
             }
         }
