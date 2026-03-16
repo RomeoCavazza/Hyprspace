@@ -14,6 +14,15 @@ CHyprspaceWidget::CHyprspaceWidget(uint64_t inOwnerID) {
         curAnimation.internalSpeed = Config::overrideAnimSpeed;
 
     g_pAnimationManager->createAnimation(0.F, curYOffset, curAnimationConfig.pValues.lock(), AVARDAMAGE_ENTIRE);
+    curYOffset->setCallbackOnEnd([this](auto) {
+        if (!active) {
+            auto owner = getOwner();
+            if (owner) {
+                g_pHyprRenderer->damageMonitor(owner);
+                g_pCompositor->scheduleFrameForMonitor(owner);
+            }
+        }
+    }, false);
     g_pAnimationManager->createAnimation(0.F, workspaceScrollOffset, curAnimationConfig.pValues.lock(), AVARDAMAGE_ENTIRE);
     curYOffset->setValueAndWarp(Config::panelHeight);
     workspaceScrollOffset->setValueAndWarp(0);
@@ -123,6 +132,7 @@ void CHyprspaceWidget::hide() {
     }
 
     updateLayout();
+    g_pHyprRenderer->damageMonitor(owner);
     g_pCompositor->scheduleFrameForMonitor(owner);
 }
 
@@ -137,6 +147,15 @@ void CHyprspaceWidget::updateConfig() {
         curAnimation.internalSpeed = Config::overrideAnimSpeed;
 
     g_pAnimationManager->createAnimation(0.F, curYOffset, curAnimationConfig.pValues.lock(), AVARDAMAGE_ENTIRE);
+    curYOffset->setCallbackOnEnd([this](auto) {
+        if (!active) {
+            auto owner = getOwner();
+            if (owner) {
+                g_pHyprRenderer->damageMonitor(owner);
+                g_pCompositor->scheduleFrameForMonitor(owner);
+            }
+        }
+    }, false);
     g_pAnimationManager->createAnimation(0.F, workspaceScrollOffset, curAnimationConfig.pValues.lock(), AVARDAMAGE_ENTIRE);
     curYOffset->setValueAndWarp(Config::panelHeight);
     workspaceScrollOffset->setValueAndWarp(0);
