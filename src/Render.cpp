@@ -33,11 +33,14 @@ void renderBorder(CBox box, CGradientValueData gradient, int size) {
 }
 
 void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWorkspaceOverride, CBox rectOverride, const Time::steady_tp& time) {
-    if (!pWindow || !pMonitor || !pWorkspaceOverride) return;
+    if (!g_renderHooksReady || !pRenderWindow || !pWindow || !pMonitor || !pWorkspaceOverride)
+        return;
 
     SRenderModifData renderModif;
 
     const auto oWorkspace = pWindow->m_workspace;
+    const auto oWorkspaceVisible = pWorkspaceOverride->m_visible;
+    const auto oWorkspaceForceRendering = pWorkspaceOverride->m_forceRendering;
     const auto oFullscreen = pWindow->m_fullscreenState;
     const auto oRealPosition = pWindow->m_realPosition->value();
     const auto oSize = pWindow->m_realSize->value();
@@ -45,7 +48,12 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
     const auto oPinned = pWindow->m_pinned;
     const auto oFloating = pWindow->m_isFloating;
 
+    if (!(oSize.x > 0) || !(pMonitor->m_scale > 0))
+        return;
+
     const float curScaling = rectOverride.w / (oSize.x * pMonitor->m_scale);
+    if (!(curScaling > 0))
+        return;
 
     // using renderModif struct to override the position and scale of windows
     // this will be replaced by matrix transformations in hyprland
@@ -53,6 +61,8 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
     renderModif.modifs.push_back(std::make_pair(SRenderModifData::eRenderModifType::RMOD_TYPE_SCALE, std::any(curScaling)));
     renderModif.enabled = true;
     pWindow->m_workspace = pWorkspaceOverride;
+    pWorkspaceOverride->m_visible = true;
+    pWorkspaceOverride->m_forceRendering = true;
     pWindow->m_fullscreenState = Desktop::View::SFullscreenState{FSMODE_NONE};
     pWindow->m_ruleApplicator->nearestNeighbor().set(false, Desktop::Types::PRIORITY_SET_PROP);
     pWindow->m_isFloating = false;
@@ -71,6 +81,8 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
 
     // restore values for normal window render
     pWindow->m_workspace = oWorkspace;
+    pWorkspaceOverride->m_visible = oWorkspaceVisible;
+    pWorkspaceOverride->m_forceRendering = oWorkspaceForceRendering;
     pWindow->m_fullscreenState = oFullscreen;
     pWindow->m_ruleApplicator->rounding().unset(Desktop::Types::PRIORITY_SET_PROP);
     pWindow->m_ruleApplicator->nearestNeighbor().unset(Desktop::Types::PRIORITY_SET_PROP);
@@ -79,7 +91,8 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
 }
 
 void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, const Time::steady_tp& time) {
-    if (!pLayer || !pMonitor) return;
+    if (!g_renderHooksReady || !pRenderLayer || !pLayer || !pMonitor)
+        return;
 
     if (!pLayer->m_mapped || pLayer->m_readyToDelete || !pLayer->m_layerSurface) return;
 
@@ -88,7 +101,12 @@ void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, const
     float oAlpha = pLayer->m_alpha->value(); // set to 1 to show hidden top layer
     const auto oFadingOut = pLayer->m_fadingOut;
 
+    if (!(oSize.x > 0))
+        return;
+
     const float curScaling = rectOverride.w / (oSize.x);
+    if (!(curScaling > 0))
+        return;
 
     SRenderModifData renderModif;
 
@@ -123,6 +141,11 @@ void CHyprspaceWidget::draw() {
     auto owner = getOwner();
 
     if (!owner) return;
+
+    if (!g_pHyprOpenGL || !g_pHyprRenderer)
+        return;
+    if (!g_pHyprOpenGL->m_renderData.pCurrentMonData)
+        return;
 
     const auto time = Time::steadyNow();
 
@@ -299,7 +322,7 @@ void CHyprspaceWidget::draw() {
                 if (!(wW > 0 && wH > 0)) return;
                 CBox curWindowBox = {wX, wY, wW, wH};
                 g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
-                renderWindowStub(w, owner, owner->m_activeWorkspace, curWindowBox, time);
+                renderWindowStub(w, owner, ws, curWindowBox, time);
                 g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 // record input-coordinate box for drag hit-testing
                 CBox inputBox = curWindowBox;
