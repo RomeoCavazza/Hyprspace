@@ -12,6 +12,7 @@
 void* pMouseKeybind;
 void* pRenderWindow;
 void* pRenderLayer;
+void* pRenderBackground;
 bool  g_renderHooksReady = false;
 
 std::vector<std::shared_ptr<CHyprspaceWidget>> g_overviewWidgets;
@@ -19,16 +20,16 @@ std::vector<std::shared_ptr<CHyprspaceWidget>> g_overviewWidgets;
 
 CHyprColor Config::panelBaseColor = CHyprColor(0, 0, 0, 0);
 CHyprColor Config::panelBorderColor = CHyprColor(0, 0, 0, 0);
-CHyprColor Config::workspaceActiveBackground = CHyprColor(0, 0, 0, 0.25);
-CHyprColor Config::workspaceInactiveBackground = CHyprColor(0, 0, 0, 0.5);
+CHyprColor Config::workspaceActiveBackground = CHyprColor(0.05, 0.08, 0.11, 0.38);
+CHyprColor Config::workspaceInactiveBackground = CHyprColor(0.05, 0.08, 0.11, 0.28);
 CHyprColor Config::workspaceActiveBorder = CHyprColor(1, 1, 1, 0.3);
-CHyprColor Config::workspaceInactiveBorder = CHyprColor(1, 1, 1, 0);
+CHyprColor Config::workspaceInactiveBorder = CHyprColor(0.72, 0.75, 0.79, 0.22);
 
 int Config::panelHeight = 250;
 int Config::panelBorderWidth = 2;
 int Config::workspaceMargin = 12;
 int Config::reservedArea = 0;
-int Config::workspaceBorderSize = 1;
+int Config::workspaceBorderSize = 2;
 bool Config::adaptiveHeight = false; // TODO: implement
 bool Config::centerAligned = true;
 bool Config::onBottom = true; // TODO: implement
@@ -39,7 +40,7 @@ bool Config::drawActiveWorkspace = true;
 bool Config::hideRealLayers = true;
 bool Config::affectStrut = true;
 
-bool Config::overrideGaps = true;
+bool Config::overrideGaps = false;
 int Config::gapsIn = 20;
 int Config::gapsOut = 60;
 
@@ -479,15 +480,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE inHandle) {
 
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:panelColor", Hyprlang::INT{CHyprColor(0, 0, 0, 0).getAsHex()});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:panelBorderColor", Hyprlang::INT{CHyprColor(0, 0, 0, 0).getAsHex()});
-    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceActiveBackground", Hyprlang::INT{CHyprColor(0, 0, 0, 0.25).getAsHex()});
-    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceInactiveBackground", Hyprlang::INT{CHyprColor(0, 0, 0, 0.5).getAsHex()});
+    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceActiveBackground", Hyprlang::INT{CHyprColor(0.05, 0.08, 0.11, 0.38).getAsHex()});
+    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceInactiveBackground", Hyprlang::INT{CHyprColor(0.05, 0.08, 0.11, 0.28).getAsHex()});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceActiveBorder", Hyprlang::INT{CHyprColor(1, 1, 1, 0.25).getAsHex()});
-    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceInactiveBorder", Hyprlang::INT{CHyprColor(1, 1, 1, 0).getAsHex()});
+    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceInactiveBorder", Hyprlang::INT{CHyprColor(0.72, 0.75, 0.79, 0.22).getAsHex()});
 
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:panelHeight", Hyprlang::INT{250});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:panelBorderWidth", Hyprlang::INT{2});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceMargin", Hyprlang::INT{12});
-    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceBorderSize", Hyprlang::INT{1});
+    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:workspaceBorderSize", Hyprlang::INT{2});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:reservedArea", Hyprlang::INT{0});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:adaptiveHeight", Hyprlang::INT{0});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:centerAligned", Hyprlang::INT{1});
@@ -499,7 +500,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE inHandle) {
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:hideRealLayers", Hyprlang::INT{1});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:affectStrut", Hyprlang::INT{1});
 
-    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:overrideGaps", Hyprlang::INT{1});
+    HyprlandAPI::addConfigValue(pHandle, "plugin:overview:overrideGaps", Hyprlang::INT{0});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:gapsIn", Hyprlang::INT{20});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:gapsOut", Hyprlang::INT{60});
 
@@ -554,10 +555,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE inHandle) {
 
     pRenderWindow = findFunctionBySymbol(pHandle, "renderWindow", "CHyprRenderer::renderWindow");
     pRenderLayer = findFunctionBySymbol(pHandle, "renderLayer", "CHyprRenderer::renderLayer");
+    pRenderBackground = findFunctionBySymbol(pHandle, "renderBackground", "CHyprRenderer::renderBackground");
     g_renderHooksReady = pRenderWindow && pRenderLayer;
-
-    if (!g_renderHooksReady)
-        HyprlandAPI::addNotification(pHandle, "[Hyprspace] render hooks unavailable, overview thumbnails disabled", CHyprColor(1.0, 0.2, 0.2, 1.0), 8000);
 
     registerMonitors();
     g_pAddMonitorHook = Event::bus()->m_events.monitor.added.listen([](const PHLMONITOR&) { registerMonitors(); });

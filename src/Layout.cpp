@@ -30,6 +30,14 @@ void CHyprspaceWidget::updateLayout() {
     // arrange layers adds LS dynamic reservations on top of our initial values
     g_pHyprRenderer->arrangeLayersForMonitor(ownerID);
 
+    // Keep the overview layout change as a pure reserved-area adjustment when
+    // gap overrides are disabled. This preserves the left/right/bottom edges of
+    // the real workspace instead of shrinking from all sides.
+    if (!Config::overrideGaps) {
+        g_layoutManager->recalculateMonitor(pMonitor);
+        return;
+    }
+
     // gaps are created via workspace rules
     // there are no way to write to m_dWorkspaceRules directly
     // and we want to refrain from using function hooks

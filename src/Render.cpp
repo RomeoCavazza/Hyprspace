@@ -1,7 +1,6 @@
 #include "Overview.hpp"
 #include "Globals.hpp"
 #include <hyprland/src/render/pass/RectPassElement.hpp>
-#include <hyprland/src/render/pass/BorderPassElement.hpp>
 #include <hyprland/src/render/pass/RendererHintsPassElement.hpp>
 #include <hyprlang.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
@@ -22,14 +21,43 @@ void renderRectWithBlur(CBox box, CHyprColor color) {
     g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(rectdata));
 }
 
-void renderBorder(CBox box, CGradientValueData gradient, int size) {
-    CBorderPassElement::SBorderData data;
-    data.box = box;
-    data.grad1 = gradient;
-    data.round = 0;
-    data.a = 1.f;
-    data.borderSize = size;
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CBorderPassElement>(data));
+static CBox insetBox(CBox box, int inset) {
+    if (inset <= 0)
+        return box;
+
+    box.x += inset;
+    box.y += inset;
+    box.w -= inset * 2;
+    box.h -= inset * 2;
+    return box;
+}
+
+static CBox pixelSnapBox(CBox box) {
+    const double right  = std::round(box.x + box.w);
+    const double bottom = std::round(box.y + box.h);
+
+    box.x = std::round(box.x);
+    box.y = std::round(box.y);
+    box.w = std::max(0.0, right - box.x);
+    box.h = std::max(0.0, bottom - box.y);
+    return box;
+}
+
+void renderBorder(CBox box, CHyprColor color, int size) {
+    if (size <= 0 || color.a <= 0.F || box.w <= 0 || box.h <= 0)
+        return;
+
+    const double horizontalHeight = std::min<double>(size, box.h);
+    const double verticalWidth    = std::min<double>(size, box.w);
+    const double verticalHeight   = std::max<double>(box.h - horizontalHeight * 2, 0);
+
+    renderRect({box.x, box.y, box.w, horizontalHeight}, color);
+    renderRect({box.x, box.y + box.h - horizontalHeight, box.w, horizontalHeight}, color);
+
+    if (verticalHeight > 0) {
+        renderRect({box.x, box.y + horizontalHeight, verticalWidth, verticalHeight}, color);
+        renderRect({box.x + box.w - verticalWidth, box.y + horizontalHeight, verticalWidth, verticalHeight}, color);
+    }
 }
 
 void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWorkspaceOverride, CBox rectOverride, const Time::steady_tp& time) {
@@ -128,6 +156,31 @@ void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, const
     pLayer->m_alpha->setValue(oAlpha);
 }
 
+void renderBackgroundStub(PHLMONITOR pMonitor, CBox rectOverride) {
+    if (!g_renderHooksReady || !pRenderBackground || !pMonitor)
+        return;
+
+    if (!(pMonitor->m_scale > 0) || !(pMonitor->m_transformedSize.x > 0))
+        return;
+
+    const float curScaling = rectOverride.w / pMonitor->m_transformedSize.x;
+    if (!(curScaling > 0))
+        return;
+
+    SRenderModifData renderModif;
+    renderModif.modifs.push_back(std::make_pair(SRenderModifData::eRenderModifType::RMOD_TYPE_TRANSLATE,
+        std::any((pMonitor->m_position * pMonitor->m_scale) + (rectOverride.pos() / curScaling) - (pMonitor->m_position * pMonitor->m_scale))));
+    renderModif.modifs.push_back(std::make_pair(SRenderModifData::eRenderModifType::RMOD_TYPE_SCALE, std::any(curScaling)));
+    renderModif.enabled = true;
+
+    g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{renderModif}));
+    Hyprutils::Utils::CScopeGuard x([] {
+        g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{SRenderModifData{}}));
+    });
+
+    (*(tRenderBackground)pRenderBackground)(g_pHyprRenderer.get(), pMonitor);
+}
+
 // NOTE: rects and clipbox positions are relative to the monitor, while damagebox and layers are not, what the fuck? xd
 void CHyprspaceWidget::draw() {
 
@@ -163,23 +216,6 @@ void CHyprspaceWidget::draw() {
 
     g_pHyprOpenGL->m_renderData.clipBox = CBox({0, 0}, owner->m_transformedSize);
 
-    if (!Config::disableBlur) {
-        renderRectWithBlur(widgetBox, Config::panelBaseColor);
-    }
-    else {
-        renderRect(widgetBox, Config::panelBaseColor);
-    }
-
-    // Panel Border
-    if (Config::panelBorderWidth > 0) {
-        // Border box
-        CBox borderBox = {widgetBox.x, owner->m_position.y + (Config::onBottom * owner->m_transformedSize.y) + (Config::panelHeight + Config::reservedArea - curYOffset->value() * owner->m_scale) * bottomInvert, owner->m_transformedSize.x, Config::panelBorderWidth};
-        borderBox.y -= owner->m_position.y;
-
-        renderRect(borderBox, Config::panelBorderColor);
-    }
-
-
     // unscaled and relative to owner
     //CBox damageBox = {0, (Config::onBottom * (owner->m_transformedSize.y - ((Config::panelHeight + Config::reservedArea)))) - (bottomInvert * curYOffset->value()), owner->m_transformedSize.x, (Config::panelHeight + Config::reservedArea) * owner->m_scale};
 
@@ -187,54 +223,8 @@ void CHyprspaceWidget::draw() {
     g_pHyprRenderer->damageMonitor(owner);
     g_pHyprRenderer->damageMonitor(owner);
 
-    // the list of workspaces to show
-    std::vector<int> workspaces;
-
-    if (Config::showSpecialWorkspace) {
-        workspaces.push_back(SPECIAL_WORKSPACE_START);
-    }
-
-    // find the lowest and highest workspace id to determine which empty workspaces to insert
-    int lowestID = INT_MAX;
-    int highestID = 1;
-    for (auto& ws : g_pCompositor->getWorkspaces()) {
-        if (!ws) continue;
-        // normal workspaces start from 1, special workspaces ends on -2
-        if (ws->m_id < 1) continue;
-        if (ws->m_monitor->m_id == ownerID) {
-            workspaces.push_back(ws->m_id);
-            if (highestID < ws->m_id) highestID = ws->m_id;
-            if (lowestID > ws->m_id) lowestID = ws->m_id;
-        }
-    }
-
-    // include empty workspaces that are between non-empty ones
-    if (Config::showEmptyWorkspace) {
-        int wsIDStart = 1;
-        int wsIDEnd = highestID;
-
-        // hyprsplit/split-monitor-workspaces compatibility
-        if (numWorkspaces > 0) {
-            wsIDStart = std::min<int>(numWorkspaces * ownerID + 1, lowestID);
-            wsIDEnd = std::max<int>(numWorkspaces * ownerID + 1, highestID); // always show the initial workspace for current monitor
-        }
-
-        for (int i = wsIDStart; i <= wsIDEnd; i++) {
-            if (i == owner->activeSpecialWorkspaceID()) continue;
-            const auto pWorkspace = g_pCompositor->getWorkspaceByID(i);
-            if (pWorkspace == nullptr)
-                workspaces.push_back(i);
-        }
-    }
-
-    // add a new empty workspace at last
-    if (Config::showNewWorkspace) {
-        // get the lowest empty workspce id after the highest id of current workspace
-        while (g_pCompositor->getWorkspaceByID(highestID) != nullptr) highestID++;
-        workspaces.push_back(highestID);
-    }
-
-    std::sort(workspaces.begin(), workspaces.end());
+    // Always render exactly five workspaces in the overview.
+    std::vector<int> workspaces = {1, 2, 3, 4, 5};
 
     // render workspace boxes
     int wsCount = workspaces.size();
@@ -251,65 +241,46 @@ void CHyprspaceWidget::draw() {
     if (!(workspaceBoxW > 0 && workspaceBoxH > 0)) return;
     for (auto wsID : workspaces) {
         const auto ws = g_pCompositor->getWorkspaceByID(wsID);
-        CBox curWorkspaceBox = {curWorkspaceRectOffsetX, curWorkspaceRectOffsetY, workspaceBoxW, workspaceBoxH};
+        CBox curWorkspaceBox = pixelSnapBox({curWorkspaceRectOffsetX, curWorkspaceRectOffsetY, workspaceBoxW, workspaceBoxH});
+        const auto borderSize = std::max(Config::workspaceBorderSize, 0);
+        const auto contentBox = pixelSnapBox(insetBox(curWorkspaceBox, borderSize));
 
-        // workspace background rect (NOT background layer) and border
+        // workspace background rect (NOT background layer)
+        bool renderedWallpaper = false;
+        if (contentBox.w > 0 && contentBox.h > 0 && pRenderBackground) {
+            g_pHyprOpenGL->m_renderData.clipBox = contentBox;
+            renderBackgroundStub(owner, contentBox);
+            g_pHyprOpenGL->m_renderData.clipBox = CBox();
+            renderedWallpaper = true;
+        }
+
         if (ws == owner->m_activeWorkspace) {
-            if (Config::workspaceBorderSize >= 1 && Config::workspaceActiveBorder.a > 0) {
-                renderBorder(curWorkspaceBox, CGradientValueData(Config::workspaceActiveBorder), Config::workspaceBorderSize);
-            }
-            if (!Config::disableBlur) {
-                renderRectWithBlur(curWorkspaceBox, Config::workspaceActiveBackground); // cant really round it until I find a proper way to clip windows to a rounded rect
-            }
-            else {
-                renderRect(curWorkspaceBox, Config::workspaceActiveBackground);
-            }
+            if (!renderedWallpaper && contentBox.w > 0 && contentBox.h > 0 && Config::workspaceActiveBackground.a > 0)
+                renderRect(contentBox, Config::workspaceActiveBackground);
             if (!Config::drawActiveWorkspace) {
                 curWorkspaceRectOffsetX += workspaceBoxW + (Config::workspaceMargin * owner->m_scale);
                 continue;
             }
         }
         else {
-            if (Config::workspaceBorderSize >= 1 && Config::workspaceInactiveBorder.a > 0) {
-                renderBorder(curWorkspaceBox, CGradientValueData(Config::workspaceInactiveBorder), Config::workspaceBorderSize);
-            }
-            if (!Config::disableBlur) {
-                renderRectWithBlur(curWorkspaceBox, Config::workspaceInactiveBackground);
-            }
-            else {
-                renderRect(curWorkspaceBox, Config::workspaceInactiveBackground);
-            }
+            if (!renderedWallpaper && contentBox.w > 0 && contentBox.h > 0 && Config::workspaceInactiveBackground.a > 0)
+                renderRect(contentBox, Config::workspaceInactiveBackground);
         }
 
         // background and bottom layers
         if (!Config::hideBackgroundLayers) {
             for (auto& ls : owner->m_layerSurfaceLayers[0]) {
-                CBox layerBox = {curWorkspaceBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor};
-                g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
+                CBox layerBox = pixelSnapBox({contentBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor});
+                g_pHyprOpenGL->m_renderData.clipBox = contentBox;
                 renderLayerStub(ls.lock(), owner, layerBox, time);
                 g_pHyprOpenGL->m_renderData.clipBox = CBox();
             }
             for (auto& ls : owner->m_layerSurfaceLayers[1]) {
-                CBox layerBox = {curWorkspaceBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor};
-                g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
+                CBox layerBox = pixelSnapBox({contentBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor});
+                g_pHyprOpenGL->m_renderData.clipBox = contentBox;
                 renderLayerStub(ls.lock(), owner, layerBox, time);
                 g_pHyprOpenGL->m_renderData.clipBox = CBox();
             }
-        }
-
-        // the mini panel to cover the awkward empty space reserved by the panel
-        if (owner->m_activeWorkspace == ws && Config::affectStrut) {
-            CBox miniPanelBox = {curWorkspaceRectOffsetX, curWorkspaceRectOffsetY, widgetBox.w * monitorSizeScaleFactor, widgetBox.h * monitorSizeScaleFactor};
-            if (Config::onBottom) miniPanelBox = {curWorkspaceRectOffsetX, curWorkspaceRectOffsetY + workspaceBoxH - widgetBox.h * monitorSizeScaleFactor, widgetBox.w * monitorSizeScaleFactor, widgetBox.h * monitorSizeScaleFactor};
-
-            if (!Config::disableBlur) {
-                renderRectWithBlur(miniPanelBox, CHyprColor(0, 0, 0, 0));
-            }
-            else {
-                // what
-                renderRect(miniPanelBox, CHyprColor(0, 0, 0, 0));
-            }
-
         }
 
         if (ws != nullptr) {
@@ -320,8 +291,8 @@ void CHyprspaceWidget::draw() {
                 double wW = w->m_realSize->value().x * monitorSizeScaleFactor * owner->m_scale;
                 double wH = w->m_realSize->value().y * monitorSizeScaleFactor * owner->m_scale;
                 if (!(wW > 0 && wH > 0)) return;
-                CBox curWindowBox = {wX, wY, wW, wH};
-                g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
+                CBox curWindowBox = pixelSnapBox({wX, wY, wW, wH});
+                g_pHyprOpenGL->m_renderData.clipBox = contentBox;
                 renderWindowStub(w, owner, ws, curWindowBox, time);
                 g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 // record input-coordinate box for drag hit-testing
@@ -354,19 +325,26 @@ void CHyprspaceWidget::draw() {
             // this layer is hidden for real workspace when panel is displayed
             if (!Config::hideTopLayers)
                 for (auto& ls : owner->m_layerSurfaceLayers[2]) {
-                    CBox layerBox = {curWorkspaceBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor};
-                    g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
+                    CBox layerBox = pixelSnapBox({contentBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor});
+                    g_pHyprOpenGL->m_renderData.clipBox = contentBox;
                     renderLayerStub(ls.lock(), owner, layerBox, time);
                     g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 }
 
             if (!Config::hideOverlayLayers)
                 for (auto& ls : owner->m_layerSurfaceLayers[3]) {
-                    CBox layerBox = {curWorkspaceBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor};
-                    g_pHyprOpenGL->m_renderData.clipBox = curWorkspaceBox;
+                    CBox layerBox = pixelSnapBox({contentBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor});
+                    g_pHyprOpenGL->m_renderData.clipBox = contentBox;
                     renderLayerStub(ls.lock(), owner, layerBox, time);
                     g_pHyprOpenGL->m_renderData.clipBox = CBox();
                 }
+        }
+
+        // Render borders last so layers and windows cannot eat the right / bottom edge.
+        if (ws == owner->m_activeWorkspace) {
+            renderBorder(curWorkspaceBox, Config::workspaceActiveBorder, borderSize);
+        } else {
+            renderBorder(curWorkspaceBox, Config::workspaceInactiveBorder, borderSize);
         }
 
 

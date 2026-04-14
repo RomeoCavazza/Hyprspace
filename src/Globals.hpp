@@ -22,6 +22,8 @@ typedef void (*tRenderWindow)(void*, PHLWINDOW, PHLMONITOR, const Time::steady_t
 extern void* pRenderWindow;
 typedef void (*tRenderLayer)(void*, PHLLS, PHLMONITOR, const Time::steady_tp&, bool, bool);
 extern void* pRenderLayer;
+typedef void (*tRenderBackground)(void*, PHLMONITOR);
+extern void* pRenderBackground;
 extern bool g_renderHooksReady;
 namespace Config {
     extern CHyprColor panelBaseColor;
