@@ -1,11 +1,19 @@
 #include "Overview.hpp"
 #include "Globals.hpp"
 
+static CCssGapData getOverviewGapsOut(const CCssGapData& baseGapsOut, int panelOffset) {
+    auto gapsOut = baseGapsOut;
+
+    if (Config::onBottom)
+        gapsOut.m_bottom += panelOffset;
+    else
+        gapsOut.m_top += panelOffset;
+
+    return gapsOut;
+}
+
 // FIXME: preserve original workspace rules
 void CHyprspaceWidget::updateLayout() {
-
-    if (!Config::affectStrut) return;
-
     const auto currentHeight = Config::panelHeight + Config::reservedArea;
     const auto pMonitor = getOwner();
     if (!pMonitor) return;
@@ -15,59 +23,36 @@ void CHyprspaceWidget::updateLayout() {
     auto* const PGAPSIN = (CCssGapData*)(PGAPSINDATA.ptr())->getData();
     auto* const PGAPSOUT = (CCssGapData*)(PGAPSOUTDATA.ptr())->getData();
 
-    // Set panel reservation as initial values BEFORE arranging layers,
-    // so that arrangeLayersForMonitor adds LS reservations as dynamic data
-    // on top of our panel reservation without double-counting.
-    if (active) {
-        if (!Config::onBottom)
-            pMonitor->m_reservedArea = Desktop::CReservedArea(currentHeight, 0, 0, 0);
-        else
-            pMonitor->m_reservedArea = Desktop::CReservedArea(0, 0, currentHeight, 0);
-    } else {
-        pMonitor->m_reservedArea = Desktop::CReservedArea();
-    }
+    const auto resetWorkspaceRule = [&](const PHLWORKSPACE& ws) {
+        const auto curRules = std::to_string(ws->m_id) + ", gapsin:" + PGAPSIN->toString() + ", gapsout:" + PGAPSOUT->toString();
+        g_pConfigManager->handleWorkspaceRules("", curRules);
+    };
 
-    // arrange layers adds LS dynamic reservations on top of our initial values
+    // Never use monitor reserved areas for overview layout. In Hyprland they are
+    // monitor-scoped, which propagates the push effect beyond the currently
+    // visible workspace. We emulate the strut with workspace-specific gaps
+    // instead so only the targeted workspace is affected.
+    pMonitor->m_reservedArea = Desktop::CReservedArea();
     g_pHyprRenderer->arrangeLayersForMonitor(ownerID);
 
-    // Keep the overview layout change as a pure reserved-area adjustment when
-    // gap overrides are disabled. This preserves the left/right/bottom edges of
-    // the real workspace instead of shrinking from all sides.
-    if (!Config::overrideGaps) {
-        g_layoutManager->recalculateMonitor(pMonitor);
-        return;
+    // Reset every workspace rule we may have touched on this monitor so the
+    // overview effect follows the currently active workspace instead of sticking
+    // to previously active ones.
+    for (auto& ws : g_pCompositor->getWorkspaces()) {
+        if (!ws || ws->m_monitor->m_id != ownerID || ws->m_isSpecialWorkspace)
+            continue;
+
+        resetWorkspaceRule(ws.lock());
     }
 
-    // gaps are created via workspace rules
-    // there are no way to write to m_dWorkspaceRules directly
-    // and we want to refrain from using function hooks
-    // so we create a workspace rule for ALL workspaces through handleWorkspaceRules
-    // Geneva Convention violation type hack but idc atm
-    if (active) {
-        const auto oActiveWorkspace = pMonitor->m_activeWorkspace;
+    if (Config::affectStrut && active && pMonitor->m_activeWorkspace && !pMonitor->m_activeWorkspace->m_isSpecialWorkspace) {
+        auto gapsIn = Config::overrideGaps ? CCssGapData(Config::gapsIn) : *PGAPSIN;
+        auto gapsOutBase = Config::overrideGaps ? CCssGapData(Config::gapsOut) : *PGAPSOUT;
+        auto gapsOut = getOverviewGapsOut(gapsOutBase, currentHeight);
 
-        for (auto& ws : g_pCompositor->getWorkspaces()) { // HACK: recalculate other workspaces without reserved area
-            if (ws->m_monitor->m_id == ownerID && ws->m_id != oActiveWorkspace->m_id) {
-                pMonitor->m_activeWorkspace = ws.lock();
-                const auto curRules = std::to_string(pMonitor->activeWorkspaceID()) + ", gapsin:" + PGAPSIN->toString() + ", gapsout:" + PGAPSOUT->toString();
-                if (Config::overrideGaps) g_pConfigManager->handleWorkspaceRules("", curRules);
-                g_layoutManager->recalculateMonitor(pMonitor);
-            }
-        }
-        pMonitor->m_activeWorkspace = oActiveWorkspace;
-
-        const auto curRules = std::to_string(pMonitor->activeWorkspaceID()) + ", gapsin:" + std::to_string(Config::gapsIn) + ", gapsout:" + std::to_string(Config::gapsOut);
-        if (Config::overrideGaps) g_pConfigManager->handleWorkspaceRules("", curRules);
-        g_layoutManager->recalculateMonitor(pMonitor);
-
+        const auto curRules = std::to_string(pMonitor->activeWorkspaceID()) + ", gapsin:" + gapsIn.toString() + ", gapsout:" + gapsOut.toString();
+        g_pConfigManager->handleWorkspaceRules("", curRules);
     }
-    else {
-        for (auto& ws : g_pCompositor->getWorkspaces()) {
-            if (ws->m_monitor->m_id == ownerID) {
-                const auto curRules = std::to_string(ws->m_id) + ", gapsin:" + PGAPSIN->toString() + ", gapsout:" + PGAPSOUT->toString();
-                if (Config::overrideGaps) g_pConfigManager->handleWorkspaceRules("", curRules);
-                g_layoutManager->recalculateMonitor(pMonitor);
-            }
-        }
-    }
+
+    g_layoutManager->invalidateMonitorGeometries(pMonitor);
 }
