@@ -1,8 +1,15 @@
 #pragma once
 #include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/render/Framebuffer.hpp>
 #include <hyprutils/animation/AnimationConfig.hpp>
+#include <optional>
 
 class CHyprspaceWidget {
+    struct SWindowGeometrySnapshot {
+        PHLWINDOWREF window;
+        WORKSPACEID  workspaceID = WORKSPACE_INVALID;
+        CBox         box;
+    };
 
     bool active = false;
 
@@ -29,6 +36,15 @@ class CHyprspaceWidget {
     // for storing the layer alpha values prior to overview activation (which sets all panel to transparent when configured)
     std::vector<std::tuple<PHLLS, float>> oLayerAlpha;
 
+    // geometry snapshot for the pre-overview scene on this monitor.
+    // windows are still rendered live, but active-workspace thumbnails can use
+    // the original box instead of the overview-compressed layout box.
+    std::vector<SWindowGeometrySnapshot> overviewWindowSnapshots;
+
+    CFramebuffer overviewMonitorSnapshot;
+    bool         overviewMonitorSnapshotValid = false;
+    WORKSPACEID  overviewMonitorSnapshotWorkspaceID = WORKSPACE_INVALID;
+
     // for click-to-exit
     std::chrono::system_clock::time_point lastPressedTime = std::chrono::high_resolution_clock::now();
 
@@ -42,6 +58,10 @@ class CHyprspaceWidget {
     double curSwipeOffset = 10.;
 
     PHLANIMVAR<float> workspaceScrollOffset;
+
+    void captureOverviewWindowSnapshots();
+    void clearOverviewWindowSnapshots();
+    void clearOverviewMonitorSnapshot();
 
 public:
 
@@ -58,6 +78,11 @@ public:
     void hide();
 
     void updateConfig();
+
+    std::optional<CBox> getOverviewWindowSnapshotBox(PHLWINDOW window, PHLWORKSPACE workspace) const;
+    void                captureOverviewMonitorSnapshot(CFramebuffer* sourceFramebuffer, WORKSPACEID workspaceID);
+    bool                hasOverviewMonitorSnapshot(PHLWORKSPACE workspace);
+    SP<CTexture>        getOverviewMonitorSnapshotTexture(PHLWORKSPACE workspace);
 
     // should be called active or not
     void draw();

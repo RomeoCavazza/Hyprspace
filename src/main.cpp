@@ -6,6 +6,8 @@
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
+#include <any>
+#include <optional>
 #include "Overview.hpp"
 #include "Globals.hpp"
 
@@ -32,7 +34,7 @@ int Config::reservedArea = 0;
 int Config::workspaceBorderSize = 2;
 bool Config::adaptiveHeight = false; // TODO: implement
 bool Config::centerAligned = true;
-bool Config::onBottom = true; // TODO: implement
+bool Config::onBottom = false; // TODO: implement
 bool Config::hideBackgroundLayers = false;
 bool Config::hideTopLayers = false;
 bool Config::hideOverlayLayers = false;
@@ -63,6 +65,35 @@ float Config::overrideAnimSpeed = 0;
 float Config::dragAlpha = 0.2;
 
 int numWorkspaces = -1; //hyprsplit/split-monitor-workspaces support
+
+namespace {
+    template <typename T>
+    std::optional<T> getPluginConfigValue(const char* key) {
+        const auto cfg = HyprlandAPI::getConfigValue(pHandle, key);
+        if (!cfg) {
+            Log::logger->log(Log::WARN, std::string{"Hyprspace: missing config value "} + key);
+            return std::nullopt;
+        }
+
+        try {
+            return std::any_cast<T>(cfg->getValue());
+        } catch (const std::bad_any_cast&) {
+            Log::logger->log(Log::ERR, std::string{"Hyprspace: invalid config type for "} + key);
+            return std::nullopt;
+        }
+    }
+
+    template <typename T>
+    void loadPluginConfig(const char* key, T& target) {
+        if (const auto value = getPluginConfigValue<T>(key); value.has_value())
+            target = *value;
+    }
+
+    void loadPluginColor(const char* key, CHyprColor& target) {
+        if (const auto value = getPluginConfigValue<Hyprlang::INT>(key); value.has_value())
+            target = CHyprColor(*value);
+    }
+}
 
 CHyprSignalListener g_pRenderHook;
 CHyprSignalListener g_pConfigReloadHook;
@@ -114,7 +145,8 @@ void onRender(eRenderStage renderStage) {
         return;
 
     const auto currentMonitor = g_pHyprOpenGL->m_renderData.pMonitor;
-    if ((renderStage == eRenderStage::RENDER_PRE_WINDOWS || renderStage == eRenderStage::RENDER_POST_WINDOWS) && !currentMonitor) {
+    if ((renderStage == eRenderStage::RENDER_PRE_WINDOWS || renderStage == eRenderStage::RENDER_POST_WINDOWS || renderStage == eRenderStage::RENDER_LAST_MOMENT) &&
+        !currentMonitor) {
         g_oAlpha = -1;
         return;
     }
@@ -154,6 +186,16 @@ void onRender(eRenderStage renderStage) {
 
         if (widget != nullptr)
             if (widget->getOwner()) {
+                if (widget->isActive() && currentMonitor->m_activeWorkspace) {
+                    CFramebuffer* sourceFramebuffer = g_pHyprOpenGL->m_renderData.currentFB;
+                    if ((!sourceFramebuffer || !sourceFramebuffer->isAllocated()) && g_pHyprOpenGL->m_renderData.mainFB &&
+                        g_pHyprOpenGL->m_renderData.mainFB->isAllocated())
+                        sourceFramebuffer = g_pHyprOpenGL->m_renderData.mainFB;
+
+                    if (sourceFramebuffer && sourceFramebuffer->isAllocated())
+                        widget->captureOverviewMonitorSnapshot(sourceFramebuffer, currentMonitor->activeWorkspaceID());
+                }
+
                 widget->draw();
                 if (g_oAlpha != -1) {
                     PHLWINDOW curWindow;
@@ -171,6 +213,21 @@ void onRender(eRenderStage renderStage) {
                 g_oAlpha = -1;
             }
 
+    }
+    else if (renderStage == eRenderStage::RENDER_LAST_MOMENT) {
+        const auto widget = getWidgetForMonitor(currentMonitor);
+
+        if (!widget || !widget->getOwner() || widget->isActive() || widget->curYOffset->isBeingAnimated())
+            return;
+
+        CFramebuffer* sourceFramebuffer = g_pHyprOpenGL->m_renderData.currentFB;
+        if ((!sourceFramebuffer || !sourceFramebuffer->isAllocated()) && g_pHyprOpenGL->m_renderData.mainFB && g_pHyprOpenGL->m_renderData.mainFB->isAllocated())
+            sourceFramebuffer = g_pHyprOpenGL->m_renderData.mainFB;
+
+        if (!sourceFramebuffer || !sourceFramebuffer->isAllocated() || !currentMonitor->m_activeWorkspace)
+            return;
+
+        widget->captureOverviewMonitorSnapshot(sourceFramebuffer, currentMonitor->activeWorkspaceID());
     }
 }
 
@@ -400,51 +457,53 @@ void* findFunctionBySymbol(HANDLE inHandle, const std::string func, const std::s
 }
 
 void reloadConfig() {
-    Config::panelBaseColor = CHyprColor(std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:panelColor")->getValue()));
-    Config::panelBorderColor = CHyprColor(std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:panelBorderColor")->getValue()));
-    Config::workspaceActiveBackground = CHyprColor(std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:workspaceActiveBackground")->getValue()));
-    Config::workspaceInactiveBackground = CHyprColor(std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:workspaceInactiveBackground")->getValue()));
-    Config::workspaceActiveBorder = CHyprColor(std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:workspaceActiveBorder")->getValue()));
-    Config::workspaceInactiveBorder = CHyprColor(std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:workspaceInactiveBorder")->getValue()));
+    loadPluginColor("plugin:overview:panelColor", Config::panelBaseColor);
+    loadPluginColor("plugin:overview:panelBorderColor", Config::panelBorderColor);
+    loadPluginColor("plugin:overview:workspaceActiveBackground", Config::workspaceActiveBackground);
+    loadPluginColor("plugin:overview:workspaceInactiveBackground", Config::workspaceInactiveBackground);
+    loadPluginColor("plugin:overview:workspaceActiveBorder", Config::workspaceActiveBorder);
+    loadPluginColor("plugin:overview:workspaceInactiveBorder", Config::workspaceInactiveBorder);
 
-    Config::panelHeight = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:panelHeight")->getValue());
-    Config::panelBorderWidth = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:panelBorderWidth")->getValue());
-    Config::workspaceMargin = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:workspaceMargin")->getValue());
-    Config::reservedArea = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:reservedArea")->getValue());
-    Config::workspaceBorderSize = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:workspaceBorderSize")->getValue());
-    Config::adaptiveHeight = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:adaptiveHeight")->getValue());
-    Config::centerAligned = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:centerAligned")->getValue());
-    Config::onBottom = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:onBottom")->getValue());
-    Config::hideBackgroundLayers = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:hideBackgroundLayers")->getValue());
-    Config::hideTopLayers = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:hideTopLayers")->getValue());
-    Config::hideOverlayLayers = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:hideOverlayLayers")->getValue());
-    Config::drawActiveWorkspace = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:drawActiveWorkspace")->getValue());
-    Config::hideRealLayers = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:hideRealLayers")->getValue());
-    Config::affectStrut = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:affectStrut")->getValue());
+    loadPluginConfig("plugin:overview:panelHeight", Config::panelHeight);
+    loadPluginConfig("plugin:overview:panelBorderWidth", Config::panelBorderWidth);
+    loadPluginConfig("plugin:overview:workspaceMargin", Config::workspaceMargin);
+    loadPluginConfig("plugin:overview:reservedArea", Config::reservedArea);
+    loadPluginConfig("plugin:overview:workspaceBorderSize", Config::workspaceBorderSize);
+    loadPluginConfig("plugin:overview:adaptiveHeight", Config::adaptiveHeight);
+    loadPluginConfig("plugin:overview:centerAligned", Config::centerAligned);
+    loadPluginConfig("plugin:overview:onBottom", Config::onBottom);
+    loadPluginConfig("plugin:overview:hideBackgroundLayers", Config::hideBackgroundLayers);
+    loadPluginConfig("plugin:overview:hideTopLayers", Config::hideTopLayers);
+    loadPluginConfig("plugin:overview:hideOverlayLayers", Config::hideOverlayLayers);
+    loadPluginConfig("plugin:overview:drawActiveWorkspace", Config::drawActiveWorkspace);
+    loadPluginConfig("plugin:overview:hideRealLayers", Config::hideRealLayers);
+    loadPluginConfig("plugin:overview:affectStrut", Config::affectStrut);
 
-    Config::overrideGaps = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:overrideGaps")->getValue());
-    Config::gapsIn = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:gapsIn")->getValue());
-    Config::gapsOut = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:gapsOut")->getValue());
+    loadPluginConfig("plugin:overview:overrideGaps", Config::overrideGaps);
+    loadPluginConfig("plugin:overview:gapsIn", Config::gapsIn);
+    loadPluginConfig("plugin:overview:gapsOut", Config::gapsOut);
 
-    Config::autoDrag = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:autoDrag")->getValue());
-    Config::autoScroll = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:autoScroll")->getValue());
-    Config::exitOnClick = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:exitOnClick")->getValue());
-    Config::switchOnDrop = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:switchOnDrop")->getValue());
-    Config::exitOnSwitch = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:exitOnSwitch")->getValue());
-    Config::showNewWorkspace = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:showNewWorkspace")->getValue());
-    Config::showEmptyWorkspace = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:showEmptyWorkspace")->getValue());
-    Config::showSpecialWorkspace = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:showSpecialWorkspace")->getValue());
+    loadPluginConfig("plugin:overview:autoDrag", Config::autoDrag);
+    loadPluginConfig("plugin:overview:autoScroll", Config::autoScroll);
+    loadPluginConfig("plugin:overview:exitOnClick", Config::exitOnClick);
+    loadPluginConfig("plugin:overview:switchOnDrop", Config::switchOnDrop);
+    loadPluginConfig("plugin:overview:exitOnSwitch", Config::exitOnSwitch);
+    loadPluginConfig("plugin:overview:showNewWorkspace", Config::showNewWorkspace);
+    loadPluginConfig("plugin:overview:showEmptyWorkspace", Config::showEmptyWorkspace);
+    loadPluginConfig("plugin:overview:showSpecialWorkspace", Config::showSpecialWorkspace);
 
-    Config::disableGestures = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:disableGestures")->getValue());
-    Config::reverseSwipe = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:reverseSwipe")->getValue());
+    loadPluginConfig("plugin:overview:disableGestures", Config::disableGestures);
+    loadPluginConfig("plugin:overview:reverseSwipe", Config::reverseSwipe);
 
-    Config::disableBlur = std::any_cast<Hyprlang::INT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:disableBlur")->getValue());
-
-    Config::overrideAnimSpeed = std::any_cast<Hyprlang::FLOAT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:overrideAnimSpeed")->getValue());
+    loadPluginConfig("plugin:overview:disableBlur", Config::disableBlur);
+    loadPluginConfig("plugin:overview:overrideAnimSpeed", Config::overrideAnimSpeed);
     
     // We don't need to store exitKey in Config namespace as it's only used in onKeyPress
 
     for (auto& widget : g_overviewWidgets) {
+        if (!widget)
+            continue;
+
         widget->updateConfig();
         widget->hide();
         IPointer::SSwipeEndEvent dummy;
@@ -452,7 +511,7 @@ void reloadConfig() {
         widget->endSwipe(dummy);
     }
 
-    Config::dragAlpha = std::any_cast<Hyprlang::FLOAT>(HyprlandAPI::getConfigValue(pHandle, "plugin:overview:dragAlpha")->getValue());
+    loadPluginConfig("plugin:overview:dragAlpha", Config::dragAlpha);
 
     // get number of workspaces from hyprsplit or split-monitor-workspaces plugin config
     Hyprlang::CConfigValue* numWorkspacesConfig = HyprlandAPI::getConfigValue(pHandle, "plugin:hyprsplit:num_workspaces");
@@ -521,8 +580,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE inHandle) {
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:dragAlpha", Hyprlang::FLOAT{0.2});
     HyprlandAPI::addConfigValue(pHandle, "plugin:overview:exitKey", Hyprlang::STRING{"Escape"});
 
-    g_pConfigReloadHook = Event::bus()->m_events.config.reloaded.listen([] { reloadConfig(); });
     HyprlandAPI::reloadConfig();
+    reloadConfig();
+    g_pConfigReloadHook = Event::bus()->m_events.config.reloaded.listen([] { reloadConfig(); });
 
     HyprlandAPI::addDispatcherV2(pHandle, "overview:toggle", ::dispatchToggleOverview);
     HyprlandAPI::addDispatcherV2(pHandle, "overview:open", ::dispatchOpenOverview);

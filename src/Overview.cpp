@@ -1,6 +1,111 @@
 #include "Overview.hpp"
 #include "Globals.hpp"
 
+void CHyprspaceWidget::clearOverviewMonitorSnapshot() {
+    overviewMonitorSnapshotValid = false;
+    overviewMonitorSnapshotWorkspaceID = WORKSPACE_INVALID;
+
+    if (overviewMonitorSnapshot.isAllocated())
+        overviewMonitorSnapshot.release();
+}
+
+void CHyprspaceWidget::captureOverviewWindowSnapshots() {
+    if (!overviewWindowSnapshots.empty())
+        return;
+
+    const auto owner = getOwner();
+    if (!owner)
+        return;
+
+    overviewWindowSnapshots.clear();
+
+    for (auto& w : g_pCompositor->m_windows) {
+        if (!w || !w->m_isMapped || !w->m_workspace || !w->m_workspace->m_monitor)
+            continue;
+
+        if (w->m_workspace->m_monitor->m_id != ownerID)
+            continue;
+
+        overviewWindowSnapshots.push_back(SWindowGeometrySnapshot{
+            .window = PHLWINDOWREF(w),
+            .workspaceID = w->m_workspace->m_id,
+            .box = CBox({w->m_realPosition->value(), w->m_realSize->value()}),
+        });
+    }
+}
+
+void CHyprspaceWidget::clearOverviewWindowSnapshots() {
+    overviewWindowSnapshots.clear();
+}
+
+std::optional<CBox> CHyprspaceWidget::getOverviewWindowSnapshotBox(PHLWINDOW window, PHLWORKSPACE workspace) const {
+    if (!window || !workspace)
+        return std::nullopt;
+
+    for (const auto& snapshot : overviewWindowSnapshots) {
+        if (snapshot.workspaceID != workspace->m_id)
+            continue;
+
+        if (snapshot.window.lock() == window)
+            return snapshot.box;
+    }
+
+    return std::nullopt;
+}
+
+void CHyprspaceWidget::captureOverviewMonitorSnapshot(CFramebuffer* sourceFramebuffer, WORKSPACEID workspaceID) {
+    if (!sourceFramebuffer || !sourceFramebuffer->isAllocated())
+        return;
+
+    const auto owner = getOwner();
+    if (!owner)
+        return;
+
+    const auto sourceSize = sourceFramebuffer->m_size;
+    const int  width      = std::max(0, static_cast<int>(std::round(sourceSize.x)));
+    const int  height     = std::max(0, static_cast<int>(std::round(sourceSize.y)));
+
+    if (!(width > 0) || !(height > 0))
+        return;
+
+    const bool needsRealloc = !overviewMonitorSnapshot.isAllocated() ||
+        static_cast<int>(std::round(overviewMonitorSnapshot.m_size.x)) != width ||
+        static_cast<int>(std::round(overviewMonitorSnapshot.m_size.y)) != height;
+
+    if (needsRealloc) {
+        clearOverviewMonitorSnapshot();
+
+        if (!overviewMonitorSnapshot.alloc(width, height))
+            return;
+    }
+
+    GLint prevReadFramebuffer = 0;
+    GLint prevDrawFramebuffer = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevReadFramebuffer);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDrawFramebuffer);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, sourceFramebuffer->getFBID());
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, overviewMonitorSnapshot.getFBID());
+    glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFramebuffer);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFramebuffer);
+
+    overviewMonitorSnapshotWorkspaceID = workspaceID;
+    overviewMonitorSnapshotValid       = true;
+}
+
+bool CHyprspaceWidget::hasOverviewMonitorSnapshot(PHLWORKSPACE workspace) {
+    return workspace && overviewMonitorSnapshotValid && overviewMonitorSnapshotWorkspaceID == workspace->m_id && overviewMonitorSnapshot.isAllocated() &&
+        overviewMonitorSnapshot.getTexture();
+}
+
+SP<CTexture> CHyprspaceWidget::getOverviewMonitorSnapshotTexture(PHLWORKSPACE workspace) {
+    if (!hasOverviewMonitorSnapshot(workspace))
+        return {};
+
+    return overviewMonitorSnapshot.getTexture();
+}
+
 CHyprspaceWidget::CHyprspaceWidget(uint64_t inOwnerID) {
     ownerID = inOwnerID;
 
@@ -45,6 +150,9 @@ PHLMONITOR CHyprspaceWidget::getOwner() {
 void CHyprspaceWidget::show() {
     auto owner = getOwner();
     if (!owner) return;
+
+    if (!active)
+        captureOverviewWindowSnapshots();
 
     if (prevFullscreen.empty()) {
         // unfullscreen all windows
@@ -129,6 +237,7 @@ void CHyprspaceWidget::hide() {
         if (oFullscreenMode == FSMODE_FULLSCREEN) w->m_wantsInitialFullscreen = false;
     }
     prevFullscreen.clear();
+    clearOverviewWindowSnapshots();
 
     active = false;
 

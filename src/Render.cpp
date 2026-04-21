@@ -2,6 +2,7 @@
 #include "Globals.hpp"
 #include <hyprland/src/render/pass/RectPassElement.hpp>
 #include <hyprland/src/render/pass/RendererHintsPassElement.hpp>
+#include <hyprland/src/render/pass/TexPassElement.hpp>
 #include <hyprlang.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
 
@@ -70,11 +71,11 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
     const auto oWorkspaceVisible = pWorkspaceOverride->m_visible;
     const auto oWorkspaceForceRendering = pWorkspaceOverride->m_forceRendering;
     const auto oFullscreen = pWindow->m_fullscreenState;
-    const auto oRealPosition = pWindow->m_realPosition->value();
-    const auto oSize = pWindow->m_realSize->value();
     const auto oUseNearestNeighbor = pWindow->m_ruleApplicator->nearestNeighbor();
     const auto oPinned = pWindow->m_pinned;
     const auto oFloating = pWindow->m_isFloating;
+    const auto oRealPosition = pWindow->m_realPosition->value();
+    const auto oSize = pWindow->m_realSize->value();
 
     if (!(oSize.x > 0) || !(pMonitor->m_scale > 0))
         return;
@@ -181,6 +182,179 @@ void renderBackgroundStub(PHLMONITOR pMonitor, CBox rectOverride) {
     (*(tRenderBackground)pRenderBackground)(g_pHyprRenderer.get(), pMonitor);
 }
 
+namespace {
+    struct SWorkspaceThumbnailScene {
+        PHLMONITOR   owner = nullptr;
+        PHLWORKSPACE workspace = nullptr;
+        CBox         workspaceBox;
+        CBox         contentBox;
+        double       monitorSizeScaleFactor = 0;
+    };
+
+    std::vector<int> getOverviewWorkspaceIDs() {
+        return {1, 2, 3, 4, 5};
+    }
+
+    void renderWorkspaceLayerGroup(const SWorkspaceThumbnailScene& scene, int layerIndex, const Time::steady_tp& time) {
+        if (!scene.owner)
+            return;
+
+        for (auto& ls : scene.owner->m_layerSurfaceLayers[layerIndex]) {
+            CBox layerBox = pixelSnapBox({
+                scene.contentBox.pos() + (ls->m_realPosition->value() - scene.owner->m_position) * scene.monitorSizeScaleFactor,
+                ls->m_realSize->value() * scene.monitorSizeScaleFactor,
+            });
+
+            g_pHyprOpenGL->m_renderData.clipBox = scene.contentBox;
+            renderLayerStub(ls.lock(), scene.owner, layerBox, time);
+            g_pHyprOpenGL->m_renderData.clipBox = CBox();
+        }
+    }
+
+    void renderWorkspaceSnapshotTexture(CHyprspaceWidget& widget, const SWorkspaceThumbnailScene& scene) {
+        const auto snapshotTexture = widget.getOverviewMonitorSnapshotTexture(scene.workspace);
+        if (!snapshotTexture)
+            return;
+
+        CTexPassElement::SRenderData textureData;
+        textureData.tex          = snapshotTexture;
+        textureData.box          = scene.contentBox;
+        textureData.a            = 1.F;
+        textureData.damage       = g_pHyprOpenGL->m_renderData.damage;
+        textureData.clipBox      = scene.contentBox;
+        textureData.flipEndFrame = true;
+        g_pHyprRenderer->m_renderPass.add(makeUnique<CTexPassElement>(textureData));
+    }
+
+    std::optional<CBox> getOverviewWindowSourceBox(const SWorkspaceThumbnailScene& scene, PHLWINDOW window) {
+        if (!window || !scene.workspace || !scene.owner)
+            return std::nullopt;
+
+        return CBox({window->m_realPosition->value(), window->m_realSize->value()});
+    }
+
+    std::optional<CBox> getOverviewWindowTargetBox(const SWorkspaceThumbnailScene& scene, const CBox& sourceWindowBox) {
+        if (!scene.owner || !(sourceWindowBox.w > 0) || !(sourceWindowBox.h > 0))
+            return std::nullopt;
+
+        const double wX = scene.workspaceBox.x + ((sourceWindowBox.x - scene.owner->m_position.x) * scene.monitorSizeScaleFactor * scene.owner->m_scale);
+        const double wY = scene.workspaceBox.y + ((sourceWindowBox.y - scene.owner->m_position.y) * scene.monitorSizeScaleFactor * scene.owner->m_scale);
+        const double wW = sourceWindowBox.w * scene.monitorSizeScaleFactor * scene.owner->m_scale;
+        const double wH = sourceWindowBox.h * scene.monitorSizeScaleFactor * scene.owner->m_scale;
+
+        if (!(wW > 0 && wH > 0))
+            return std::nullopt;
+
+        return pixelSnapBox({wX, wY, wW, wH});
+    }
+
+    void trackOverviewWindowInputBox(std::vector<std::tuple<PHLWINDOWREF, CBox>>& windowBoxes, PHLMONITOR owner, PHLWINDOW window, CBox targetWindowBox) {
+        if (!owner || !window)
+            return;
+
+        targetWindowBox.scale(1.0 / owner->m_scale);
+        targetWindowBox.x += owner->m_position.x;
+        targetWindowBox.y += owner->m_position.y;
+        windowBoxes.emplace_back(PHLWINDOWREF(window), targetWindowBox);
+    }
+
+    std::optional<CBox> getSnapshotWorkspaceInputSourceBox(CHyprspaceWidget& widget, const SWorkspaceThumbnailScene& scene, PHLWINDOW window) {
+        if (!window || !scene.workspace || !scene.owner)
+            return std::nullopt;
+
+        // When the active workspace thumbnail is refreshed from the live monitor
+        // framebuffer, input boxes must follow the current live geometry too.
+        if (widget.isActive() && scene.workspace == scene.owner->m_activeWorkspace)
+            return CBox({window->m_realPosition->value(), window->m_realSize->value()});
+
+        return widget.getOverviewWindowSnapshotBox(window, scene.workspace);
+    }
+
+    void trackSnapshotWorkspaceWindows(CHyprspaceWidget& widget, const SWorkspaceThumbnailScene& scene, std::vector<std::tuple<PHLWINDOWREF, CBox>>& windowBoxes) {
+        if (!scene.workspace || !scene.owner)
+            return;
+
+        auto trackWindow = [&](PHLWINDOW window) {
+            if (!window)
+                return;
+
+            const auto snapshotBox = getSnapshotWorkspaceInputSourceBox(widget, scene, window);
+            if (!snapshotBox.has_value())
+                return;
+
+            const auto targetWindowBox = getOverviewWindowTargetBox(scene, *snapshotBox);
+            if (!targetWindowBox.has_value())
+                return;
+
+            trackOverviewWindowInputBox(windowBoxes, scene.owner, window, *targetWindowBox);
+        };
+
+        for (auto& window : g_pCompositor->m_windows) {
+            if (!window)
+                continue;
+
+            if (window->m_workspace == scene.workspace && !window->m_isFloating)
+                trackWindow(window);
+        }
+
+        for (auto& window : g_pCompositor->m_windows) {
+            if (!window)
+                continue;
+
+            if (window->m_workspace == scene.workspace && window->m_isFloating && scene.workspace->getLastFocusedWindow() != window)
+                trackWindow(window);
+        }
+
+        if (scene.workspace->getLastFocusedWindow() && scene.workspace->getLastFocusedWindow()->m_isFloating)
+            trackWindow(scene.workspace->getLastFocusedWindow());
+    }
+
+    void renderWorkspaceWindows(CHyprspaceWidget& widget, const SWorkspaceThumbnailScene& scene, const Time::steady_tp& time, PHLWINDOW draggedWindow, bool trackInput,
+        std::vector<std::tuple<PHLWINDOWREF, CBox>>& windowBoxes) {
+        if (!scene.workspace || !scene.owner)
+            return;
+
+        auto renderAndTrackWindow = [&](PHLWINDOW window) {
+            if (!window || window == draggedWindow)
+                return;
+
+            const auto sourceWindowBox = getOverviewWindowSourceBox(scene, window);
+            if (!sourceWindowBox.has_value())
+                return;
+
+            const auto targetWindowBox = getOverviewWindowTargetBox(scene, *sourceWindowBox);
+            if (!targetWindowBox.has_value())
+                return;
+
+            g_pHyprOpenGL->m_renderData.clipBox = scene.contentBox;
+            renderWindowStub(window, scene.owner, scene.workspace, *targetWindowBox, time);
+            g_pHyprOpenGL->m_renderData.clipBox = CBox();
+
+            if (trackInput)
+                trackOverviewWindowInputBox(windowBoxes, scene.owner, window, *targetWindowBox);
+        };
+
+        for (auto& window : g_pCompositor->m_windows) {
+            if (!window)
+                continue;
+
+            if (window->m_workspace == scene.workspace && !window->m_isFloating)
+                renderAndTrackWindow(window);
+        }
+
+        for (auto& window : g_pCompositor->m_windows) {
+            if (!window)
+                continue;
+
+            if (window->m_workspace == scene.workspace && window->m_isFloating && scene.workspace->getLastFocusedWindow() != window)
+                renderAndTrackWindow(window);
+        }
+
+        if (scene.workspace->getLastFocusedWindow() && scene.workspace->getLastFocusedWindow()->m_isFloating)
+            renderAndTrackWindow(scene.workspace->getLastFocusedWindow());
+    }
+}
+
 // NOTE: rects and clipbox positions are relative to the monitor, while damagebox and layers are not, what the fuck? xd
 void CHyprspaceWidget::draw() {
 
@@ -223,144 +397,121 @@ void CHyprspaceWidget::draw() {
     g_pHyprRenderer->damageMonitor(owner);
     g_pHyprRenderer->damageMonitor(owner);
 
-    // Always render exactly five workspaces in the overview.
-    std::vector<int> workspaces = {1, 2, 3, 4, 5};
+    const auto workspaces = getOverviewWorkspaceIDs();
+    const int              wsCount    = workspaces.size();
 
-    // render workspace boxes
-    int wsCount = workspaces.size();
-    double monitorSizeScaleFactor = ((Config::panelHeight - 2 * Config::workspaceMargin) / (owner->m_transformedSize.y)) * owner->m_scale; // scale box with panel height
-    double workspaceBoxW = owner->m_transformedSize.x * monitorSizeScaleFactor;
-    double workspaceBoxH = owner->m_transformedSize.y * monitorSizeScaleFactor;
-    double workspaceGroupWidth = workspaceBoxW * wsCount + (Config::workspaceMargin * owner->m_scale) * (wsCount - 1);
-    double curWorkspaceRectOffsetX = Config::centerAligned ? workspaceScrollOffset->value() + (widgetBox.w / 2.) - (workspaceGroupWidth / 2.) : workspaceScrollOffset->value() + Config::workspaceMargin;
-    double curWorkspaceRectOffsetY = !Config::onBottom ? (((Config::reservedArea + Config::workspaceMargin) * owner->m_scale) - curYOffset->value()) : (owner->m_transformedSize.y - ((Config::reservedArea + Config::workspaceMargin) * owner->m_scale) - workspaceBoxH + curYOffset->value());
-    double workspaceOverflowSize = std::max<double>(((workspaceGroupWidth - widgetBox.w) / 2) + (Config::workspaceMargin * owner->m_scale), 0);
+    const double baseMonitorSizeScaleFactor = ((Config::panelHeight - 2 * Config::workspaceMargin) / (owner->m_transformedSize.y)) * owner->m_scale;
+    const double baseWorkspaceBoxW          = owner->m_transformedSize.x * baseMonitorSizeScaleFactor;
+    const double baseWorkspaceBoxH          = owner->m_transformedSize.y * baseMonitorSizeScaleFactor;
+    const double baseWorkspaceGroupWidth    = baseWorkspaceBoxW * wsCount + (Config::workspaceMargin * owner->m_scale) * (wsCount - 1);
+    const double workspaceOverflowSize      = std::max<double>(((baseWorkspaceGroupWidth - widgetBox.w) / 2) + (Config::workspaceMargin * owner->m_scale), 0);
 
     *workspaceScrollOffset = std::clamp<double>(workspaceScrollOffset->goal(), -workspaceOverflowSize, workspaceOverflowSize);
 
-    if (!(workspaceBoxW > 0 && workspaceBoxH > 0)) return;
-    for (auto wsID : workspaces) {
-        const auto ws = g_pCompositor->getWorkspaceByID(wsID);
-        CBox curWorkspaceBox = pixelSnapBox({curWorkspaceRectOffsetX, curWorkspaceRectOffsetY, workspaceBoxW, workspaceBoxH});
-        const auto borderSize = std::max(Config::workspaceBorderSize, 0);
-        const auto contentBox = pixelSnapBox(insetBox(curWorkspaceBox, borderSize));
+    if (!(baseWorkspaceBoxW > 0 && baseWorkspaceBoxH > 0))
+        return;
 
-        // workspace background rect (NOT background layer)
-        bool renderedWallpaper = false;
-        if (contentBox.w > 0 && contentBox.h > 0 && pRenderBackground) {
-            g_pHyprOpenGL->m_renderData.clipBox = contentBox;
-            renderBackgroundStub(owner, contentBox);
-            g_pHyprOpenGL->m_renderData.clipBox = CBox();
-            renderedWallpaper = true;
-        }
+    auto renderOverviewScene = [&](CBox sceneBox, bool trackInput) -> void {
+        if (!(sceneBox.w > 0 && sceneBox.h > 0) || !(owner->m_transformedSize.x > 0))
+            return;
 
-        if (ws == owner->m_activeWorkspace) {
-            if (!renderedWallpaper && contentBox.w > 0 && contentBox.h > 0 && Config::workspaceActiveBackground.a > 0)
-                renderRect(contentBox, Config::workspaceActiveBackground);
-            if (!Config::drawActiveWorkspace) {
-                curWorkspaceRectOffsetX += workspaceBoxW + (Config::workspaceMargin * owner->m_scale);
-                continue;
-            }
-        }
-        else {
-            if (!renderedWallpaper && contentBox.w > 0 && contentBox.h > 0 && Config::workspaceInactiveBackground.a > 0)
-                renderRect(contentBox, Config::workspaceInactiveBackground);
-        }
+        const double sceneScale = sceneBox.w / owner->m_transformedSize.x;
+        if (!(sceneScale > 0))
+            return;
 
-        // background and bottom layers
-        if (!Config::hideBackgroundLayers) {
-            for (auto& ls : owner->m_layerSurfaceLayers[0]) {
-                CBox layerBox = pixelSnapBox({contentBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor});
-                g_pHyprOpenGL->m_renderData.clipBox = contentBox;
-                renderLayerStub(ls.lock(), owner, layerBox, time);
-                g_pHyprOpenGL->m_renderData.clipBox = CBox();
-            }
-            for (auto& ls : owner->m_layerSurfaceLayers[1]) {
-                CBox layerBox = pixelSnapBox({contentBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor});
-                g_pHyprOpenGL->m_renderData.clipBox = contentBox;
-                renderLayerStub(ls.lock(), owner, layerBox, time);
-                g_pHyprOpenGL->m_renderData.clipBox = CBox();
-            }
-        }
+        const double monitorSizeScaleFactor = baseMonitorSizeScaleFactor * sceneScale;
+        const double workspaceBoxW          = baseWorkspaceBoxW * sceneScale;
+        const double workspaceBoxH          = baseWorkspaceBoxH * sceneScale;
+        const double workspaceGroupWidth    = baseWorkspaceGroupWidth * sceneScale;
 
-        if (ws != nullptr) {
-            auto renderAndTrackWindow = [&](PHLWINDOW w) {
-                if (w == draggedWindow) return; // hide thumbnail while dragging
-                double wX = curWorkspaceRectOffsetX + ((w->m_realPosition->value().x - owner->m_position.x) * monitorSizeScaleFactor * owner->m_scale);
-                double wY = curWorkspaceRectOffsetY + ((w->m_realPosition->value().y - owner->m_position.y) * monitorSizeScaleFactor * owner->m_scale);
-                double wW = w->m_realSize->value().x * monitorSizeScaleFactor * owner->m_scale;
-                double wH = w->m_realSize->value().y * monitorSizeScaleFactor * owner->m_scale;
-                if (!(wW > 0 && wH > 0)) return;
-                CBox curWindowBox = pixelSnapBox({wX, wY, wW, wH});
-                g_pHyprOpenGL->m_renderData.clipBox = contentBox;
-                renderWindowStub(w, owner, ws, curWindowBox, time);
-                g_pHyprOpenGL->m_renderData.clipBox = CBox();
-                // record input-coordinate box for drag hit-testing
-                CBox inputBox = curWindowBox;
-                inputBox.scale(1.0 / owner->m_scale);
-                inputBox.x += owner->m_position.x;
-                inputBox.y += owner->m_position.y;
-                windowBoxes.emplace_back(PHLWINDOWREF(w), inputBox);
+        CBox sceneWidgetBox = pixelSnapBox({
+            sceneBox.x + widgetBox.x * sceneScale,
+            sceneBox.y + widgetBox.y * sceneScale,
+            widgetBox.w * sceneScale,
+            widgetBox.h * sceneScale,
+        });
+
+        double curWorkspaceRectOffsetX = Config::centerAligned ?
+            sceneWidgetBox.x + workspaceScrollOffset->value() * sceneScale + (sceneWidgetBox.w / 2.) - (workspaceGroupWidth / 2.) :
+            sceneWidgetBox.x + workspaceScrollOffset->value() * sceneScale + Config::workspaceMargin * sceneScale;
+
+        double curWorkspaceRectOffsetY = !Config::onBottom ?
+            sceneWidgetBox.y + ((Config::reservedArea + Config::workspaceMargin) * owner->m_scale * sceneScale) :
+            sceneWidgetBox.y + sceneWidgetBox.h - ((Config::reservedArea + Config::workspaceMargin) * owner->m_scale * sceneScale) - workspaceBoxH;
+
+        for (auto wsID : workspaces) {
+            const auto ws = g_pCompositor->getWorkspaceByID(wsID);
+            CBox curWorkspaceBox = pixelSnapBox({curWorkspaceRectOffsetX, curWorkspaceRectOffsetY, workspaceBoxW, workspaceBoxH});
+            const auto borderSize = std::max(0, int(std::round(Config::workspaceBorderSize * sceneScale)));
+            const auto contentBox = pixelSnapBox(insetBox(curWorkspaceBox, borderSize));
+            const SWorkspaceThumbnailScene workspaceScene{
+                .owner = owner,
+                .workspace = ws,
+                .workspaceBox = curWorkspaceBox,
+                .contentBox = contentBox,
+                .monitorSizeScaleFactor = monitorSizeScaleFactor,
             };
 
-            // draw tiled windows
-            for (auto& w : g_pCompositor->m_windows) {
-                if (!w) continue;
-                if (w->m_workspace == ws && !w->m_isFloating)
-                    renderAndTrackWindow(w);
-            }
-            // draw floating windows
-            for (auto& w : g_pCompositor->m_windows) {
-                if (!w) continue;
-                if (w->m_workspace == ws && w->m_isFloating && ws->getLastFocusedWindow() != w)
-                    renderAndTrackWindow(w);
-            }
-            // draw last focused floating window on top
-            if (ws->getLastFocusedWindow())
-                if (ws->getLastFocusedWindow()->m_isFloating)
-                    renderAndTrackWindow(ws->getLastFocusedWindow());
-        }
+            bool renderedWallpaper = false;
+            const bool useMonitorSnapshot = hasOverviewMonitorSnapshot(ws);
 
-        if (owner->m_activeWorkspace != ws || !Config::hideRealLayers) {
-            // this layer is hidden for real workspace when panel is displayed
-            if (!Config::hideTopLayers)
-                for (auto& ls : owner->m_layerSurfaceLayers[2]) {
-                    CBox layerBox = pixelSnapBox({contentBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor});
+            if (ws == owner->m_activeWorkspace && !Config::drawActiveWorkspace) {
+                curWorkspaceRectOffsetX += workspaceBoxW + (Config::workspaceMargin * owner->m_scale * sceneScale);
+                continue;
+            }
+
+            if (useMonitorSnapshot) {
+                renderWorkspaceSnapshotTexture(*this, workspaceScene);
+
+                if (trackInput)
+                    trackSnapshotWorkspaceWindows(*this, workspaceScene, windowBoxes);
+            } else {
+                if (contentBox.w > 0 && contentBox.h > 0 && pRenderBackground) {
                     g_pHyprOpenGL->m_renderData.clipBox = contentBox;
-                    renderLayerStub(ls.lock(), owner, layerBox, time);
+                    renderBackgroundStub(owner, contentBox);
                     g_pHyprOpenGL->m_renderData.clipBox = CBox();
+                    renderedWallpaper = true;
                 }
 
-            if (!Config::hideOverlayLayers)
-                for (auto& ls : owner->m_layerSurfaceLayers[3]) {
-                    CBox layerBox = pixelSnapBox({contentBox.pos() + (ls->m_realPosition->value() - owner->m_position) * monitorSizeScaleFactor, ls->m_realSize->value() * monitorSizeScaleFactor});
-                    g_pHyprOpenGL->m_renderData.clipBox = contentBox;
-                    renderLayerStub(ls.lock(), owner, layerBox, time);
-                    g_pHyprOpenGL->m_renderData.clipBox = CBox();
+                if (ws == owner->m_activeWorkspace) {
+                    if (!renderedWallpaper && contentBox.w > 0 && contentBox.h > 0 && Config::workspaceActiveBackground.a > 0)
+                        renderRect(contentBox, Config::workspaceActiveBackground);
+                } else {
+                    if (!renderedWallpaper && contentBox.w > 0 && contentBox.h > 0 && Config::workspaceInactiveBackground.a > 0)
+                        renderRect(contentBox, Config::workspaceInactiveBackground);
                 }
+
+                if (!Config::hideBackgroundLayers) {
+                    renderWorkspaceLayerGroup(workspaceScene, 0, time);
+                    renderWorkspaceLayerGroup(workspaceScene, 1, time);
+                }
+
+                renderWorkspaceWindows(*this, workspaceScene, time, draggedWindow, trackInput, windowBoxes);
+
+                if (owner->m_activeWorkspace != ws || !Config::hideRealLayers) {
+                    if (!Config::hideTopLayers)
+                        renderWorkspaceLayerGroup(workspaceScene, 2, time);
+
+                    if (!Config::hideOverlayLayers)
+                        renderWorkspaceLayerGroup(workspaceScene, 3, time);
+                }
+            }
+
+            if (ws == owner->m_activeWorkspace)
+                renderBorder(curWorkspaceBox, Config::workspaceActiveBorder, borderSize);
+            else
+                renderBorder(curWorkspaceBox, Config::workspaceInactiveBorder, borderSize);
+
+            if (trackInput) {
+                curWorkspaceBox.scale(1 / owner->m_scale);
+                curWorkspaceBox.x += owner->m_position.x;
+                curWorkspaceBox.y += owner->m_position.y;
+                workspaceBoxes.emplace_back(std::make_tuple(wsID, curWorkspaceBox));
+            }
+
+            curWorkspaceRectOffsetX += workspaceBoxW + Config::workspaceMargin * owner->m_scale * sceneScale;
         }
+    };
 
-        // Render borders last so layers and windows cannot eat the right / bottom edge.
-        if (ws == owner->m_activeWorkspace) {
-            renderBorder(curWorkspaceBox, Config::workspaceActiveBorder, borderSize);
-        } else {
-            renderBorder(curWorkspaceBox, Config::workspaceInactiveBorder, borderSize);
-        }
-
-
-        // Resets workspaceBox to scaled absolute coordinates for input detection.
-        // While rendering is done in pixel coordinates, input detection is done in
-        // scaled coordinates, taking into account monitor scaling.
-        // Since the monitor position is already given in scaled coordinates,
-        // we only have to scale all relative coordinates, then add them to the
-        // monitor position to get a scaled absolute position.
-        curWorkspaceBox.scale(1 / owner->m_scale);
-
-        curWorkspaceBox.x += owner->m_position.x;
-        curWorkspaceBox.y += owner->m_position.y;
-        workspaceBoxes.emplace_back(std::make_tuple(wsID, curWorkspaceBox));
-
-        // set the current position to the next workspace box
-        curWorkspaceRectOffsetX += workspaceBoxW + Config::workspaceMargin * owner->m_scale;
-    }
+    renderOverviewScene(CBox({0, 0}, owner->m_transformedSize), true);
 }
