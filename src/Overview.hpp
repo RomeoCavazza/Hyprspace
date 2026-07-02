@@ -19,16 +19,13 @@ class CHyprspaceWidget {
     Hyprutils::Animation::SAnimationPropertyConfig curAnimationConfig;
     Hyprutils::Animation::SAnimationPropertyConfig curAnimation;
 
-    // --- Hit Testing ---
     std::vector<std::tuple<int, CBox>> workspaceBoxes;
     std::vector<std::tuple<PHLWINDOWREF, CBox>> windowBoxes;
     PHLWINDOWREF draggedWindowRef;
 
-    // --- Preserved State ---
     std::vector<std::tuple<PHLWINDOWREF, eFullscreenMode>> prevFullscreen;
     std::vector<std::tuple<PHLLS, float>> oLayerAlpha;
 
-    // --- Overview Snapshots ---
     std::vector<SWindowGeometrySnapshot> overviewWindowSnapshots;
 
     CFramebuffer overviewMonitorSnapshot;

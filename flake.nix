@@ -32,7 +32,6 @@
           overlays = [hyprland.overlays.hyprland-packages];
         }));
 
-    # Generate version
     mkDate = longDate: (concatStringsSep "-" [
       (substring 0 4 longDate)
       (substring 4 2 longDate)

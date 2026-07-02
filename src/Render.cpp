@@ -98,7 +98,6 @@ void renderWindowStub(PHLWINDOW pWindow, PHLMONITOR pMonitor, PHLWORKSPACE pWork
     renderdata.surface                          = pWindow->wlSurface()->resource();
     renderdata.dontRound                        = pWindow->isEffectiveInternalFSMode(FSMODE_FULLSCREEN);
     renderdata.fadeAlpha                        = 1.F;
-    // Thumbnail transforms are render hints; keep them out of opaque occlusion.
     renderdata.alpha                            = 0.999F;
     renderdata.decorate                         = false;
     renderdata.rounding                         = renderdata.dontRound ? 0 : pWindow->rounding() * curScaling * pMonitor->m_scale;
@@ -136,7 +135,7 @@ void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, const
 
     Vector2D oRealPosition = pLayer->m_realPosition->value();
     Vector2D oSize = pLayer->m_realSize->value();
-    float oAlpha = pLayer->m_alpha->value(); // set to 1 to show hidden top layer
+    float oAlpha = pLayer->m_alpha->value();
     const auto oFadingOut = pLayer->m_fadingOut;
 
     if (!(oSize.x > 0))
@@ -155,7 +154,6 @@ void renderLayerStub(PHLLS pLayer, PHLMONITOR pMonitor, CBox rectOverride, const
     pLayer->m_fadingOut = false;
 
     g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{renderModif}));
-    // Reset render modifiers when the scoped pass completes.
     Hyprutils::Utils::CScopeGuard x([] {
         g_pHyprRenderer->m_renderPass.add(makeUnique<CRendererHintsPassElement>(CRendererHintsPassElement::SData{SRenderModifData{}}));
         });
@@ -278,8 +276,6 @@ namespace {
         if (!window || !scene.workspace || !scene.owner)
             return std::nullopt;
 
-        // When the active workspace thumbnail is refreshed from the live monitor
-        // framebuffer, input boxes must follow the current live geometry too.
         if (widget.isActive() && scene.workspace == scene.owner->m_activeWorkspace)
             return CBox({window->m_realPosition->value(), window->m_realSize->value()});
 
@@ -371,7 +367,6 @@ namespace {
     }
 }
 
-// Rects and clip boxes are monitor-relative; damage boxes and layers are not.
 void CHyprspaceWidget::draw() {
 
     workspaceBoxes.clear();

@@ -37,16 +37,9 @@ void CHyprspaceWidget::updateLayout() {
         HyprspaceCompat::handleWorkspaceRules("", curRules);
     };
 
-    // Never use monitor reserved areas for overview layout. In Hyprland they are
-    // monitor-scoped, which propagates the push effect beyond the currently
-    // visible workspace. We emulate the strut with workspace-specific gaps
-    // instead so only the targeted workspace is affected.
     pMonitor->m_reservedArea = Desktop::CReservedArea();
     g_pHyprRenderer->arrangeLayersForMonitor(ownerID);
 
-    // Reset every workspace rule we may have touched on this monitor so the
-    // overview effect follows the currently active workspace instead of sticking
-    // to previously active ones.
     for (auto& ws : g_pCompositor->getWorkspaces()) {
         if (!ws || ws->m_monitor->m_id != ownerID || ws->m_isSpecialWorkspace)
             continue;

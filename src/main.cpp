@@ -168,7 +168,7 @@ void onRender(eRenderStage renderStage) {
                 if (curWindow) {
                     if (widget->isActive()) {
                         g_oAlpha = curWindow->alphaGoal(Desktop::View::WINDOW_ALPHA_ACTIVE);
-                        curWindow->alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->setValueAndWarp(0); // Hide dragged window for this render pass.
+                        curWindow->alpha(Desktop::View::WINDOW_ALPHA_ACTIVE)->setValueAndWarp(0);
                     }
                 }
                 else g_oAlpha = -1;
@@ -316,7 +316,7 @@ void onKeyPress(IKeyboard::SKeyEvent e, Event::SCallbackInfo& info) {
     if (!exitKeyValue)
         return;
 
-    const auto keycode = e.keycode + 8; // Because to xkbcommon it's +8 from libinput
+    const auto keycode = e.keycode + 8;
     const xkb_keysym_t keysym = xkb_state_key_get_one_sym(k->m_xkbSymState, keycode);
 
     const auto cfgExitKey = std::any_cast<Hyprlang::STRING>(exitKeyValue->getValue());

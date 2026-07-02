@@ -111,7 +111,6 @@ CHyprspaceWidget::CHyprspaceWidget(uint64_t inOwnerID) {
 
     curAnimationConfig = *::Config::animationTree()->getAnimationPropertyConfig("windows");
 
-    // Keep a writable copy of the animation config.
     curAnimation = *curAnimationConfig.pValues.lock();
     *curAnimationConfig.pValues.lock() = curAnimation;
 
@@ -255,7 +254,6 @@ void CHyprspaceWidget::hide() {
 void CHyprspaceWidget::updateConfig() {
     curAnimationConfig = *::Config::animationTree()->getAnimationPropertyConfig("windows");
 
-    // Keep a writable copy of the animation config.
     curAnimation = *curAnimationConfig.pValues.lock();
     *curAnimationConfig.pValues.lock() = curAnimation;
 
